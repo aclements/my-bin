@@ -1,0 +1,39 @@
+#!/bin/env zsh
+
+if [[ $#argv > 2 ]]; then
+    echo "Usage: $0 [infile [outfile]]"
+    exit 1;
+fi
+
+if [[ -n $1 ]]; then
+    infile=$1
+    shift;
+else
+    infile=/dev/stdin;
+fi
+
+if [[ -n $1 ]]; then
+    outfile=$1
+    shift;
+else
+    outfile=/dev/stdout;
+fi
+
+# psutils generally need real file names
+tf1=`mktemp /tmp/ps2up.XXXXXX`
+tf2=`mktemp /tmp/ps2up.XXXXXX`
+
+# Determine bounding box
+ps2epsi $infile $tf1  # This flattens all the pages into one
+ps2epsi $tf1 $tf2     # This finds the max bounding box of all pages
+bbox=(`grep '^%%BoundingBox: ' $tf2 |    # This extracts the bounding box
+         sed '1q' |                      # Make sure I only get one of them
+         sed 's/[^0-9]*\([ 0-9]*\)/\1/'  # Get just the dimensions`)
+
+# Transform pages
+(pstops -q "1:0(-${bbox[1]},-${bbox[2]})" $infile |
+ psresize -q -W$(($bbox[3] - $bbox[1])) -H$(($bbox[4] - $bbox[2])) |
+ psnup -q -2 -m1cm) > $outfile
+
+# Clean up
+rm $tf1 $tf2

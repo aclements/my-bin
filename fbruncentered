@@ -1,0 +1,18 @@
+#!/usr/bin/zsh
+
+W=200
+H=16
+
+if (xdpyinfo | grep -q XINERAMA); then
+    DIMS=(`xdpyinfo -ext XINERAMA | grep head | tail -1 | \
+       sed 's/.*: \([0-9]*\)x\([0-9]*\) @ \([0-9]*\),\([0-9]*\)/\1 \2 \3 \4/'`)
+    X=$(( DIMS[3] + DIMS[1] / 2 - W / 2 ))
+    Y=$(( DIMS[4] + DIMS[2] / 2 - H / 2 ));
+else;
+    DIMS=(`xdpyinfo | grep dimensions | \
+       sed 's/.*: *\([0-9]*\)x\([0-9]*\).*/\1 \2/'`)
+    X=$(( DIMS[1] / 2 - W / 2 ))
+    Y=$(( DIMS[2] / 2 - H / 2 ));
+fi
+
+exec fbrun -pos $X $Y -w $W -h $H
