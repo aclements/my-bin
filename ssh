@@ -1,25 +1,38 @@
-#!/usr/bin/zsh
+#!/bin/env zsh
 
 # Find the real ssh
 REALSSH=`whence -a ssh | grep -A1 $0 | sed 1d`
 
 # Do the key dance
 EXTRA=
-if ( ! ssh-add -l > /dev/null ); then
-    # Try graphical askpass first
-    X=`ssh-add < /dev/null`
-    V=$?
-    X=`echo $X | grep -q '^ssh_askpass'`
-    if [[ $V == 1 && $X == 0 ]]; then
-	# That failed because askpass couldn't be found, so try it
-	# through the terminal
+ssh-add -l &> /dev/null
+LISTRES=$?
+if [[ $LISTRES == 1 ]]; then	# No keys in agent
+    # Look for a graphical askpass
+    for X in ssh-askpass x11-ssh-askpass gtk2-ssh-askpass; do
+	if whence $X &> /dev/null; then
+	    SSH_ASKPASS=$X
+	    break
+	fi
+    done
+    # Add the user's key
+    if [[ -n $DISPLAY && -n $SSH_ASKPASS ]]; then
+	# Use the graphical askpass
+	ssh-add < /dev/null
+    else
+	# Use the terminal
+	unset SSH_ASKPASS
 	ssh-add
-	V=$?;
     fi
-    if [[ $V != 0 ]]; then
+    ADDRES=$?
+    if [[ $ADDRES != 0 ]]; then
 	# Adding failed, so don't ask again
 	EXTRA=(-o 'PubkeyAuthentication no');
-    fi;
+    fi
+elif [[ $LISTRES == 2 ]]; then
+    echo I could not find an ssh agent
+    # I'd rather be asked my real password at this point
+    EXTRA=(-o 'PubkeyAuthentication no');
 fi
 
 # Start the real ssh
