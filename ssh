@@ -1,0 +1,26 @@
+#!/usr/bin/zsh
+
+# Find the real ssh
+REALSSH=`whence -a ssh | grep -A1 $0 | sed 1d`
+
+# Do the key dance
+EXTRA=
+if ( ! ssh-add -l > /dev/null ); then
+    # Try graphical askpass first
+    X=`ssh-add < /dev/null`
+    V=$?
+    X=`echo $X | grep -q '^ssh_askpass'`
+    if [[ $V == 1 && $X == 0 ]]; then
+	# That failed because askpass couldn't be found, so try it
+	# through the terminal
+	ssh-add
+	V=$?;
+    fi
+    if [[ $V != 0 ]]; then
+	# Adding failed, so don't ask again
+	EXTRA=(-o 'PubkeyAuthentication no');
+    fi;
+fi
+
+# Start the real ssh
+$REALSSH $EXTRA $*
