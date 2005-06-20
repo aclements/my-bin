@@ -1,4 +1,4 @@
-#!/bin/env zsh
+#!/bin/zsh
 
 if [[ $#argv > 2 ]]; then
     echo "Usage: $0 [infile [outfile]]"

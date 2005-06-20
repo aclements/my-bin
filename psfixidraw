@@ -1,4 +1,4 @@
-#!/usr/bin/zsh
+#!/bin/zsh
 
 # This script fixes up a bug in postscript files that include graphics
 # produced by idraw.  See
