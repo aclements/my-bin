@@ -33,7 +33,7 @@ bbox=(`grep '^%%BoundingBox: ' $tf2 |    # This extracts the bounding box
 # Transform pages
 (pstops -q "1:0(-${bbox[1]},-${bbox[2]})" $infile |
  psresize -q -W$(($bbox[3] - $bbox[1])) -H$(($bbox[4] - $bbox[2])) |
- psnup -q -2 -m1cm) > $outfile
+ psnup -q -2 -m1cm -pletter) > $outfile
 
 # Clean up
 rm $tf1 $tf2
