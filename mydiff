@@ -1,0 +1,7 @@
+#!/bin/zsh
+
+if whence colordiff &> /dev/null; then
+    colordiff -uw --no-banner $*
+else
+    diff -uw $*
+fi
