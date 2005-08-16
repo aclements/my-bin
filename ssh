@@ -1,39 +1,108 @@
-#!/bin/env zsh
+#!/bin/zsh
+
+# Array of graphical askpass programs to search for, in order of
+# preference
+ASKPASSERS=(ssh-askpass x11-ssh-askpass gtk2-ssh-askpass)
+# File in which to look for and store the agent environment.  If blank
+# or unset, rely on an agent environment to already be present (though
+# behave sanely if no agent is running)
+AGENTENV=~/.ssh/agent-env
+# If non-blank, start an agent if one isn't already running and store
+# its environment in $AGENTENV for future use
+STARTAGENT=1
+
 
 # Find the real ssh
 REALSSH=`whence -a ssh | grep -A1 $0 | sed 1d`
+if [[ -z $REALSSH ]]; then
+    # XXX Probably not in path.  Be more careful about this
+    REALSSH=ssh
+fi
+EXTRAARGS=
 
-# Do the key dance
-EXTRA=
-ssh-add -l &> /dev/null
-LISTRES=$?
-if [[ $LISTRES == 1 ]]; then	# No keys in agent
+is_agent_running() {
+    [[ -z $SSH_AGENT_PID ]] && return 1
+    ssh-add -l &> /dev/null
+    local res=$?
+    if (( $res == 0 )); then
+        # Agent running and contains keys
+        return 0
+    elif (( $res == 1 )); then
+        # Agent running but contains no keys
+        if [[ $1 == --haskeys ]]; then
+            return 1
+        else
+            return 0
+        fi
+    elif (( $res == 2 )); then
+        # No agent running
+        return 1
+    else
+        echo "Unknown return code from ssh-add -l: $res"
+        return 2
+    fi
+}
+
+disable_key_auth() {
+    EXTRAARGS=($EXTRAARGS -o 'PubkeyAuthentication no')
+}
+
+add_key() {
     # Look for a graphical askpass
-    for X in ssh-askpass x11-ssh-askpass gtk2-ssh-askpass; do
-	if whence $X &> /dev/null; then
-	    SSH_ASKPASS=$X
-	    break
-	fi
+    for X in $ASKPASSERS; do
+        if whence $X &> /dev/null; then
+            local ssh_askpass=$X
+            break
+        fi
     done
     # Add the user's key
-    if [[ -n $DISPLAY && -n $SSH_ASKPASS ]]; then
-	# Use the graphical askpass
-	ssh-add < /dev/null
+    if [[ -n $DISPLAY && -n $SSH_ASKPASS && -z $STY ]]; then
+        # Use the graphical askpass if I have an X, a graphical
+        # askpass, and I'm not running in screen (since that tends to
+        # put the askpass window on the wrong display)
+        SSH_ASKPASS=$ssh_askpass ssh-add < /dev/null
     else
-	# Use the terminal
-	unset SSH_ASKPASS
-	ssh-add
+        # Use the terminal
+        ssh-add
     fi
-    ADDRES=$?
-    if [[ $ADDRES != 0 ]]; then
-	# Adding failed, so don't ask again
-	EXTRA=(-o 'PubkeyAuthentication no');
+}
+
+# Deal with missing agents
+if [[ -n $AGENTENV ]] && ! is_agent_running; then
+    # No agent running, see if there's a known one I can connect to
+    if [[ -f $AGENTENV ]]; then
+        source $AGENTENV &> /dev/null
     fi
-elif [[ $LISTRES == 2 ]]; then
-    echo I could not find an ssh agent
+    if is_agent_running; then
+        echo "Attached to existing agent $SSH_AGENT_PID"
+    else
+        # Stale agent environment
+        rm -f $AGENTENV
+        if [[ -n $STARTAGENT ]]; then
+            # Start a new agent
+            touch $AGENTENV
+            chmod 0600 $AGENTENV
+            ssh-agent -s > $AGENTENV
+            source $AGENTENV &> /dev/null
+            echo "Started new agent $SSH_AGENT_PID"
+        fi
+    fi
+fi
+
+# Do the key dance
+if is_agent_running; then
+    if ! is_agent_running --haskeys; then
+        echo "Adding key to agent"
+        if ! add_key; then
+            echo "Failed to add key to agent"
+            disable_key_auth
+        fi
+    fi
+else
+    echo "Failed to find an ssh agent"
     # I'd rather be asked my real password at this point
-    EXTRA=(-o 'PubkeyAuthentication no');
+    disable_key_auth
 fi
 
 # Start the real ssh
-$REALSSH $EXTRA $*
+echo $REALSSH $EXTRAARGS $*
