@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 # 
-# $Id: colordiff.pl,v 1.4.2.10 2004/01/04 15:02:59 daveewart Exp $
+# $Id: colordiff.pl,v 1.4.2.12 2005/03/28 20:11:34 daveewart Exp $
 
 ########################################################################
 #                                                                      #
@@ -32,11 +32,11 @@ use Getopt::Long qw(:config pass_through);
 use IPC::Open2;
 
 my $app_name     = 'colordiff';
-my $version      = '1.0.4';
+my $version      = '1.0.5';
 my $author       = 'Dave Ewart';
 my $author_email = 'davee@sungate.co.uk';
 my $app_www      = 'http://colordiff.sourceforge.net/';
-my $copyright    = '(C)2002-2004';
+my $copyright    = '(C)2002-2005';
 my $show_banner  = 1;
 
 # ANSI sequences for colours
@@ -57,13 +57,14 @@ $colour{darkcyan}    = "\033[0;36m";
 $colour{darkred}     = "\033[0;31m";
 $colour{darkmagenta} = "\033[0;35m";
 $colour{darkblack}   = "\033[0;30m";
-$colour{OFF}         = "\033[0;0m";
+$colour{off}         = "\033[0;0m";
 
 # Default colours if /etc/colordiffrc or ~/.colordiffrc do not exist
 my $plain_text = $colour{white};
 my $file_old   = $colour{red};
 my $file_new   = $colour{blue};
 my $diff_stuff = $colour{magenta};
+my $cvs_stuff  = $colour{green};
 
 # Locations for personal and system-wide colour configurations
 my $HOME   = $ENV{HOME};
@@ -80,14 +81,20 @@ foreach $config_file (@config_files) {
             next if (/^#/ || /^$/);
             s/\s+//g;
             ($setting, $value) = split ('=');
+            if (!defined $value) {
+                print STDERR "Invalid configuration line ($_) in $config_file\n";
+                next;
+            }
             if ($setting eq 'banner') {
                 if ($value eq 'no') {
                     $show_banner = 0;
                 }
                 next;
             }
+            $setting =~ tr/A-Z/a-z/;
+            $value =~ tr/A-Z/a-z/;
             if (!defined $colour{$value}) {
-                print "Invalid colour specification ($value) in $config_file\n";
+                print STDERR "Invalid colour specification ($value) in $config_file\n";
                 next;
             }
             if ($setting eq 'plain') {
@@ -102,8 +109,11 @@ foreach $config_file (@config_files) {
             elsif ($setting eq 'diffstuff') {
                 $diff_stuff = $colour{$value};
             }
+            elsif ($setting eq 'cvsstuff') {
+                $cvs_stuff = $colour{$value};
+            }
             else {
-                print "Unknown option in $etcdir/colordiffrc: $setting\n";
+                print STDERR "Unknown option in $config_file: $setting\n";
             }
         }
         close COLORDIFFRC;
@@ -111,13 +121,26 @@ foreach $config_file (@config_files) {
 }
 
 # colordiff specfic options here.  Need to pre-declare if using variables
-GetOptions(
-    "no-banner" => sub { $show_banner = 0 },
-    "plain-text=s" => \&set_color,
-    "file-old=s"   => \&set_color,
-    "file-new=s"   => \&set_color,
-    "diff-stuff=s" => \&set_color
-);
+
+# ----------------------------------------------------------------------------
+# FIXME
+#
+# Remove this (contributed) code for now - the long options break the addition
+# of extra diff options supplied on the command line.  On balance, modifying the
+# diff options is probably more important than having colordiff customisations
+# on the command line.
+#
+# Need to find a proper fix for this so that this can be reincluded
+
+###  GetOptions(
+###      "no-banner" => sub { $show_banner = 0 },
+###      "plain-text=s" => \&set_color,
+###      "file-old=s"   => \&set_color,
+###      "file-new=s"   => \&set_color,
+###      "cvs-stuff=s"  => \&set_color,
+###      "diff-stuff=s" => \&set_color
+###  );
+# ----------------------------------------------------------------------------
 
 if ($show_banner == 1) {
     print STDERR "$app_name $version ($app_www)\n";
@@ -145,28 +168,29 @@ else {
 my $diff_type = 'unknown';
 my $record;
 
-foreach $record (@inputstream) {
-    # Unified diffs are the only flavour having '+++'
+DIFF_TYPE: foreach $record (@inputstream) {
+    # Unified diffs are the only flavour having '+++' or '---'
     # at the start of a line
-    if ($record =~ /^\+\+\+/) {
+    if ($record =~ /^(\+\+\+|---)/) {
         $diff_type = 'diffu';
+        last DIFF_TYPE;
     }
     # Context diffs are the only flavour having '***'
     # at the start of a line
-    elsif ($record =~ /\*\*\*/) {
+    elsif ($record =~ /^\*\*\*/) {
         $diff_type = 'diffc';
+        last DIFF_TYPE;
     }
     # Plain diffs have NcN, NdN and NaN etc.
     elsif ($record =~ /^[0-9,]+[acd][0-9,]+$/) {
         $diff_type = 'diff';
+        last DIFF_TYPE;
     }
 }
 
-my $nrecs           = 0;
 my $inside_file_old = 1;
 
 foreach (@inputstream) {
-    $nrecs++;
     if ($diff_type eq 'diff') {
         if (/^</) {
             print "$file_old";
@@ -176,6 +200,9 @@ foreach (@inputstream) {
         }
         elsif (/^[1-9]/) {
             print "$diff_stuff";
+        }
+        elsif (/^(Index: |={5,}|RCS file: |retrieving |diff )/) {
+            print "$cvs_stuff";
         }
         else {
             print "$plain_text";
@@ -213,6 +240,9 @@ foreach (@inputstream) {
                 print "$file_new";
             }
         }
+        elsif (/^(Index: |={5,}|RCS file: |retrieving |diff )/) {
+            print "$cvs_stuff";
+        }
         else {
             print "$plain_text";
         }
@@ -227,11 +257,14 @@ foreach (@inputstream) {
         elsif (/^\@/) {
             print "$diff_stuff";
         }
+        elsif (/^(Index: |={5,}|RCS file: |retrieving |diff )/) {
+            print "$cvs_stuff";
+        }
         else {
             print "$plain_text";
         }
     }
-    s/$/$colour{OFF}/;
+    s/$/$colour{off}/;
     print "$_";
 }
 
