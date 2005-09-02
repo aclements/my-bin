@@ -1,0 +1,56 @@
+#!/bin/zsh
+
+cmd=$0
+usage() {
+    echo "Usage: $cmd host1 [host2 ...] [-- command]"
+    echo
+    fmt <<EOF
+Opens up new screen windows ssh'd to each host.  If a command is
+specified, executes the command on each host.  If not in a screen,
+starts a new GNU screen session, with a shell in its first window
+before ssh'ing to each host.
+EOF
+    exit 1
+}
+
+# Check basic usage
+if (( ${#*} == 0 )); then
+    usage
+fi
+
+# Start a screen if I'm not in one
+if [[ -z $STY ]]; then
+    exec screen -S mssh $0 --becomeshell $*
+fi
+
+# Parse command line
+hosts=()
+becomeshell=
+while [[ -n $1 ]]; do
+    if [[ $1 == --becomeshell ]]; then
+        becomeshell=1
+    elif [[ $1 == -- ]]; then
+        shift
+        break
+    elif [[ $1 == -* ]]; then
+        echo "Unrecognized option: $1"
+        usage
+    fi
+    hosts=($hosts $1)
+    shift
+done
+
+# Make sure some hosts were specified
+if (( ${#hosts} == 0 )); then
+    usage
+fi
+
+# Do the ssh dance
+for host in $hosts; do
+    screen -t $host ssh -t $host $*
+done
+
+# If I'm supposed to become a shell, do so
+if [[ -n $becomeshell ]]; then
+    exec $SHELL
+fi
