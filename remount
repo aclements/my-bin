@@ -1,0 +1,15 @@
+#!/bin/zsh
+
+mounts=(`mount | grep ^sshfs | grep $HOME/n/mounts | awk '{print $3}'`)
+for mount in $mounts; do
+    echo Unmounting $mount
+    fusermount -u $mount
+done
+
+for host in awakening.mit.edu drake.homelinux.org; do
+    mountpoint=$HOME/n/mounts/${host%%.*}
+    if [[ -d $mountpoint ]]; then
+        echo Mounting $host at $mountpoint
+        sshfs $host:/ $mountpoint -o reconnect -o cache_timeout=1
+    fi
+done
