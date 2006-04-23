@@ -1,5 +1,9 @@
 #!/bin/zsh
 
+if ps wax | grep -v grep | grep -q amarokapp &> /dev/null; then
+    echo "Warning: Amarok is running on drake.  Control mappings won't work"
+fi
+
 killall synergys
 synergys
 ssh -f -x -R 24800:localhost:24800 awk \

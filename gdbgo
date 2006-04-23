@@ -1,0 +1,7 @@
+#!/bin/zsh
+
+PROG=$1
+shift
+ARGS=$*
+
+exec gdb $PROG -x <(echo set args $ARGS)
