@@ -38,7 +38,7 @@ is_agent_running() {
         # No agent running
         return 1
     else
-        echo "Unknown return code from ssh-add -l: $res"
+        echo "Unknown return code from ssh-add -l: $res" > /dev/stderr
         return 2
     fi
 }
@@ -74,7 +74,7 @@ if [[ -n $AGENTENV ]] && ! is_agent_running; then
         source $AGENTENV &> /dev/null
     fi
     if is_agent_running; then
-        echo "Attached to existing agent $SSH_AGENT_PID"
+        echo "Attached to existing agent $SSH_AGENT_PID" > /dev/stderr
     else
         # Stale agent environment
         rm -f $AGENTENV
@@ -84,7 +84,7 @@ if [[ -n $AGENTENV ]] && ! is_agent_running; then
             chmod 0600 $AGENTENV
             ssh-agent -s > $AGENTENV
             source $AGENTENV &> /dev/null
-            echo "Started new agent $SSH_AGENT_PID"
+            echo "Started new agent $SSH_AGENT_PID" > /dev/stderr
         fi
     fi
 fi
@@ -92,17 +92,17 @@ fi
 # Do the key dance
 if is_agent_running; then
     if ! is_agent_running --haskeys; then
-        echo "Adding key to agent"
+        echo "Adding key to agent" > /dev/stderr
         if ! add_key; then
-            echo "Failed to add key to agent"
+            echo "Failed to add key to agent" > /dev/stderr
             disable_key_auth
         fi
     fi
 else
-    echo "Failed to find an ssh agent"
+    echo "Failed to find an ssh agent" > /dev/stderr
     # I'd rather be asked my real password at this point
     disable_key_auth
 fi
 
 # Start the real ssh
-echo $REALSSH $EXTRAARGS $*
+exec $REALSSH $EXTRAARGS $*
