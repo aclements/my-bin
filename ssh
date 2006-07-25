@@ -2,11 +2,11 @@
 
 # Array of graphical askpass programs to search for, in order of
 # preference
-ASKPASSERS=(ssh-askpass x11-ssh-askpass gtk2-ssh-askpass)
+ASKPASSERS=(ssh-askpass x11-ssh-askpass gtk2-ssh-askpass $SSH_ASKPASS)
 # File in which to look for and store the agent environment.  If blank
 # or unset, rely on an agent environment to already be present (though
 # behave sanely if no agent is running)
-AGENTENV=~/.ssh/agent-env
+AGENTENV=~/.ssh/agent-env-$HOST
 # If non-blank, start an agent if one isn't already running and store
 # its environment in $AGENTENV for future use
 STARTAGENT=1
@@ -56,7 +56,7 @@ add_key() {
         fi
     done
     # Add the user's key
-    if [[ -n $DISPLAY && -n $SSH_ASKPASS && -z $STY ]]; then
+    if [[ -n $DISPLAY && -n $ssh_askpass && -z $STY ]]; then
         # Use the graphical askpass if I have an X, a graphical
         # askpass, and I'm not running in screen (since that tends to
         # put the askpass window on the wrong display)
