@@ -1,0 +1,21 @@
+#!/bin/zsh
+
+if [[ $#* == 1 ]]; then
+    if [[ ! -d $1 ]]; then
+        echo "$1 does not exist or is not a directory"
+        exit 1
+    fi
+    SBDIR=`cd $1 && pwd`
+else
+    SBDIR=`mysb srcdir`
+fi
+
+echo "StreamBase is at $SBDIR"
+
+if [[ -d $SBDIR/.svn ]]; then
+    export PROMPTFLUFF=$(basename $SBDIR)
+else
+    export PROMPTFLUFF=sb
+fi
+
+STREAMBASE_HOME=$SBDIR path=($SBDIR/bin $path) LD_LIBRARY_PATH=$SBDIR/lib:$LD_LIBRARY_PATH exec zsh
