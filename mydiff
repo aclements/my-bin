@@ -1,7 +1,23 @@
 #!/bin/zsh
 
-if whence colordiff &> /dev/null; then
-    colordiff -uw $*
-else
-    diff -uw $*
+if [[ -n $* ]]; then
+    ARGS=-uw
 fi
+
+if whence colordiff &> /dev/null; then
+    CMD=colordiff
+elif [[ -x ~/bin/extra/colordiff ]]; then
+    CMD=~/bin/extra/colordiff
+else
+    if [[ -z $* ]]; then
+        CMD=cat
+    else
+        CMD=diff
+    fi
+fi
+
+if [[ $CMD == *colordiff && ! -f ~/.colordiffrc ]]; then
+    echo "banner=no" > ~/.colordiffrc
+fi
+
+exec $CMD $ARGS $*
