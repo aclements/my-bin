@@ -1,0 +1,100 @@
+#!/bin/zsh
+
+set -e
+
+sb_src_dir() {
+    if [[ -n $SBZSH_DIR ]]; then
+        echo $SBZSH_DIR
+    else
+        local sbdir=`pwd`
+        while [[ ! -f $sbdir/apps/sbd.cpp ]]; do
+            if [[ $sbdir -ef / ]]; then
+                echo "Couldn't find StreamBase source directory!"
+                exit 1
+            fi
+            sbdir=`dirname $sbdir`
+        done
+        echo $sbdir
+    fi
+}
+
+update_tags() {
+    echo -n "Updating TAGS..."
+
+    cd `sb_src_dir`
+
+    rm -f TAGS
+    f -name "*.java" | xargs etags --append
+
+    echo "  done"
+}
+
+update_xref() {
+    cd `sb_src_dir`
+
+    if [[ -d xrefdb ]]; then
+        local func=jde-xref-update
+        echo "Updating xref database..."
+    else
+        local func=jde-xref-make-xref-db
+        echo "Creating xref database..."
+    fi
+
+    emacs --batch -l ~/.emacs -f $func
+}
+
+compile-with() {
+#    local dir=`mktemp -dt sbd-compile.XXXXXX`
+    local dir=/tmp/sbd-compile.`date +'%Y-%M-%d.%H-%M-%S'`
+    if [[ -d $dir ]]; then
+        echo "$dir already exists"
+        exit 1
+    fi
+    mkdir $dir
+    local sbconf=$dir/sbd.sbconf
+    local args="$1 -Dstreambase.codegen.debug=true -Dstreambase.codegen.comment-statements=true -Dstreambase.mangle-legibly=true -Dstreambase.codegen.srcdir=$dir"
+    shift
+
+#     (echo '<streambase-configuration>';
+#         echo '<java-vm>';
+#         echo -n '<param name="jvm-args" value="';
+#         echo -n $args;
+#         echo '"/>';
+#         echo "</java-vm>";
+#         echo "</streambase-configuration>") > $sbconf
+
+#     echo "Configuration written to $sbconf"
+    echo "Compiling to $dir..."
+    echo "  sbd $*"
+    STREAMBASE_JVM_ARGS=$args sbd $* || true
+    # UGH!  I can't tell sbd to shutdown after compiling
+    echo
+    echo
+    echo "Compiled to $dir"
+}
+
+compile() {
+    compile-with "" $*
+}
+
+debug() {
+    compile-with "-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8000" $*
+}
+
+op=$1
+shift
+args=($*)
+if [[ $op == srcdir ]]; then
+    sb_src_dir $args
+elif [[ $op == tags ]]; then
+    update_tags $args
+elif [[ $op == xref ]]; then
+    update_xref $args
+elif [[ $op == compile ]]; then
+    compile $args
+elif [[ $op == debug ]]; then
+    debug $args
+else
+    echo "Unrecognized command: $op"
+    exit
+fi

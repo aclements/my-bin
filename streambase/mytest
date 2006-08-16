@@ -1,0 +1,129 @@
+#!/usr/bin/python
+
+import os, sys, time
+from colorizer import Color, CharColorizer
+
+OK = Color(Color.GREEN, Color.NONE, Color.BRIGHT)
+FAIL = Color(Color.RED, Color.NONE, Color.BRIGHT)
+FAILHEADER = Color(Color.RED)
+DIRECTORY = Color(Color.YELLOW, Color.NONE, Color.BRIGHT)
+
+class TestColorizer(CharColorizer):
+    def __init__(self):
+        CharColorizer.__init__(self)
+        
+        self.__line = ""
+
+        self.__coloredLine = False
+        self.__inHeader = None
+        self.__resetSpinner()
+
+        self.__showSpinner = False
+
+    def onStart(self, isatty):
+        self.__showSpinner = isatty
+
+    def getTimeout(self):
+        return self.__spinnerTimout()
+
+    def onTimeout(self):
+        self.__spinner()
+
+    def __spinnerTimout(self):
+        if self.__testStart:
+            return max(0, 1 - ((time.time() - self.__testStart) % 1))
+        return None
+
+    def __backSpinner(self):
+        self.output("\b"*len(self.__lastTestStr))
+
+    def __wipeSpinner(self):
+        self.__backSpinner()
+        self.output(" "*len(self.__lastTestStr))
+        self.__backSpinner()
+        self.__resetSpinner()
+
+    def __resetSpinner(self):
+        self.__testStart = None
+        self.__lastTestStr = ""
+
+    def __spinner(self):
+        diff = time.time() - self.__testStart
+        s = "%.1fs" % diff
+        self.__backSpinner()
+        self.output(s)
+        self.__lastTestStr = s
+
+    def onInput(self, new):
+        oldline = self.__line
+        self.__line += new
+        if self.__inHeader and \
+           len(self.__inHeader) == 1 and \
+           not self.__line.startswith("FAIL: "[:len(self.__line)]):
+            self.output("\r" + "".join(self.__inHeader))
+            self.output(oldline)
+            self.__inHeader = None
+
+        if not self.__inHeader:
+            new = self.__colorDirectory("Entering directory ", oldline, new)
+            new = self.__colorDirectory("Leaving directory ", oldline, new)
+            self.output(new)
+            if self.__showSpinner and \
+                   self.__line.endswith(" ... ") and \
+                   not self.__testStart:
+                self.__testStart = time.time()
+            if not self.__coloredLine:
+                self.__colorResult("... ok", OK)
+                self.__colorResult("result: ok", OK)
+                self.__colorResult("... FAIL", FAIL)
+                self.__colorResult("result: FAIL", FAIL)
+
+    def __split(self, text, at):
+        return text[:at], text[at:]
+
+    def __colorResult(self, text, color):
+        pos = self.__line.find(text)
+        if pos != -1:
+            l = len(text)
+            upto, after = self.__split(self.__line, pos+l)
+            self.__wipeSpinner()
+            self.output("\r" + color(upto) + after)
+            self.__coloredLine = True
+
+    def __colorDirectory(self, text, oldline, new):
+        if self.__line.find(text) != -1:
+            dirpos = self.__line.find(text) + len(text)
+            if len(oldline) < dirpos:
+                # new contains transition from non-dir to dir
+                newdirpos = dirpos - len(oldline)
+                upto, after = self.__split(new, newdirpos)
+                return upto + DIRECTORY(after)
+            else:
+                return DIRECTORY(new)
+            self.__coloredLine = True
+        else:
+            return new
+
+    def onNewline(self):
+        startHeader = False
+        if self.__line == "=" * 70:
+            self.__inHeader = []
+            startHeader = True
+
+        if self.__inHeader or startHeader:
+            self.__inHeader.append(self.__line + "\n")
+            if len(self.__inHeader) == 3:
+                data = "".join(self.__inHeader)
+                self.output("\r" + FAILHEADER(data))
+                self.__inHeader = None
+        else:
+            self.__wipeSpinner()
+            self.output("\n")
+
+        self.__line = ""
+        self.__coloredLine = False
+        self.__resetSpinner()
+
+if __name__ == "__main__":
+    TestColorizer().start()
+

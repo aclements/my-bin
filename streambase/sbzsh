@@ -7,6 +7,7 @@ if [[ $#* == 1 ]]; then
     fi
     SBDIR=`cd $1 && pwd`
 else
+    unset SBZSH_DIR
     SBDIR=`mysb srcdir`
 fi
 
@@ -17,5 +18,7 @@ if [[ -d $SBDIR/.svn ]]; then
 else
     export PROMPTFLUFF=sb
 fi
+
+export SBZSH_DIR=$SBDIR
 
 STREAMBASE_HOME=$SBDIR path=($SBDIR/bin $path) LD_LIBRARY_PATH=$SBDIR/lib:$LD_LIBRARY_PATH exec zsh

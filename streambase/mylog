@@ -1,0 +1,131 @@
+#!/usr/bin/python
+
+import sys, os, time, errno
+from colorizer import Color, LineColorizer
+
+LEVELMAP = {"error" : Color(Color.WHITE, Color.RED, Color.BRIGHT),
+            "warn" : Color(Color.RED, Color.NONE, Color.BRIGHT),
+            "notice" : Color(Color.RED),
+            "info" : Color(Color.BLUE, Color.NONE, Color.BRIGHT),
+            "debug" : Color(Color.GREEN, Color.NONE, Color.BRIGHT),
+            "debug2" : Color(Color.GREEN),
+            "debug3" : Color(Color.GREEN, Color.NONE, Color.DIM)}
+
+LOCATION = Color(Color.NONE, Color.NONE, Color.UNDERSCORE)
+BODY = Color()
+METHOD_NAME = Color(Color.GREEN, Color.NONE, Color.BRIGHT)
+
+MATCH = Color(Color.YELLOW, Color.NONE, Color.BRIGHT)
+
+def parse(line):
+    if not line.startswith("["):
+        return "", "", line
+    start, end = 1, line.find("]")
+    level = line[start:end]
+    location = ""
+    if len(line) > end + 2 and line[end + 2] == "[":
+        start, end = end + 3, line.find("]", end+1)
+        location = level
+        level = line[start:end]
+    body = line[end + 2:]
+    return level, location, body
+
+def colorMatch(string, matches, noMatchColor, matchColor):
+    positions = []
+    for m in matches:
+        pos = -1
+        while True:
+            pos = string.find(m, pos+1)
+            if pos == -1:
+                break
+            positions.append((pos, pos+len(m)))
+
+    if not positions:
+        return None
+
+    positions.sort(lambda x,y: cmp(x[0], y[0]))
+    simplified = []
+    while positions:
+        start, end = positions.pop(0)
+        while positions:
+            nstart, nend = positions[0]
+            if nstart <= end:
+                positions.pop(0)
+                end = max(end, nend)
+            else:
+                break
+        simplified.append((start, end))
+
+    out = []
+    pos = 0
+    underlined = matchColor + Color.UNDERSCORE
+    for start, end in simplified:
+        out.append(matchColor(string[pos:start]))
+        out.append(underlined(string[start:end]))
+        pos = end
+    out.append(matchColor(string[pos:]))
+
+    return "".join(out)
+
+class LogColorizer(LineColorizer):
+    def processArgs(self, args):
+        matchLocation = []
+        matchBody = []
+        while args:
+            arg = args.pop(0)
+            if arg == "-l":
+                matchLocation.append(args.pop(0))
+            elif arg == "-b":
+                matchBody.append(args.pop(0))
+            else:
+                matchLocation.append(arg)
+                matchBody.append(arg)
+        self.__matchLocation = matchLocation
+        self.__matchBody = matchBody
+
+    def getExtraEnvironment(self):
+        return {"LOG_LEVEL":"3"}
+
+    def onStart(self, isatty):
+        self.__longestLevel = max([len(level) for level in LEVELMAP.keys()])
+        self.__last10 = self.__last1 = time.time()
+
+    def onLine(self, line):
+        level, location, body = parse(line)
+
+        now = time.time()
+        if now - self.__last10 >= 10:
+            self.output("--")
+            self.__last1 = self.__last10 = now
+        elif now - self.__last1 >= 1:
+            self.output("- ")
+            self.__last1 = now
+        else:
+            self.output("  ")
+
+        if level:
+            color = LEVELMAP.get(level, Color())
+            self.output(color("[%s]" % level.ljust(self.__longestLevel)) + " ")
+
+        if location:
+            self.output(("[%s]" % colorMatch(location, self.__matchLocation, LOCATION, MATCH)) + " ")
+            
+        body2 = colorMatch(body, self.__matchBody, BODY, MATCH)
+        if body2 != None:
+            self.output(body2)
+        else:
+            mnpos = body.find("<methodName>")
+            if mnpos != -1:
+                mnpos += len("<methodName>")
+                mnend = body.find("</methodName>", mnpos)
+                if mnend != -1:
+                    body = (body[:mnpos] +
+                            METHOD_NAME(body[mnpos:mnend]) +
+                            body[mnend:])
+            self.output(body)
+
+        self.output("\n")
+
+if __name__ == "__main__":
+    LogColorizer().start()
+
