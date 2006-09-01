@@ -45,7 +45,7 @@ update_xref() {
 
 compile-with() {
 #    local dir=`mktemp -dt sbd-compile.XXXXXX`
-    local dir=/tmp/sbd-compile.`date +'%Y-%M-%d.%H-%M-%S'`
+    local dir=/tmp/sbd-compile.`date +'%Y-%m-%d.%H-%M-%S'`
     if [[ -d $dir ]]; then
         echo "$dir already exists"
         exit 1
@@ -55,15 +55,6 @@ compile-with() {
     local args="$1 -Dstreambase.codegen.debug=true -Dstreambase.codegen.comment-statements=true -Dstreambase.mangle-legibly=true -Dstreambase.codegen.srcdir=$dir"
     shift
 
-#     (echo '<streambase-configuration>';
-#         echo '<java-vm>';
-#         echo -n '<param name="jvm-args" value="';
-#         echo -n $args;
-#         echo '"/>';
-#         echo "</java-vm>";
-#         echo "</streambase-configuration>") > $sbconf
-
-#     echo "Configuration written to $sbconf"
     echo "Compiling to $dir..."
     echo "  sbd $*"
     STREAMBASE_JVM_ARGS=$args sbd $* || true
@@ -81,6 +72,19 @@ debug() {
     compile-with "-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8000" $*
 }
 
+diffbranch() {
+    info=`svn propget svnmerge-integrated`
+    if [[ -z $info ]]; then
+        echo "Not in checkout root?"
+        exit 1
+    fi
+    from=${info/:*/}
+    rev=${info/*-/}
+    repos=`svn info | grep ^URL: | sed -e 's/^URL: // ; s,/eng/.*,,'`
+    base=`svn info | grep ^URL: | sed -e 's/^URL: //'`
+    svn diff --old=$repos$from@$rev --new=$base
+}
+
 op=$1
 shift
 args=($*)
@@ -94,6 +98,8 @@ elif [[ $op == compile ]]; then
     compile $args
 elif [[ $op == debug ]]; then
     debug $args
+elif [[ $op == diffbranch ]]; then
+    diffbranch $args
 else
     echo "Unrecognized command: $op"
     exit
