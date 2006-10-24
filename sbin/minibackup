@@ -1,0 +1,167 @@
+#!/bin/bash
+
+set -e
+
+PRETEND=echo
+
+usage() {
+    echo "$0 [--full | --incremental] [--packages] --dest magic srcdirs..."
+    exit 1
+}
+
+dest=
+packages=
+srcdirs=()
+
+while [[ -n $1 ]]; do
+    case $1 in
+        --dest )
+            shift
+            dest=$1
+            ;;
+        --packages )
+            packages=1
+            ;;
+        --full )
+            ;;
+        --incremental )
+            echo "Incremental backup not currently supported"
+            exit 1
+            ;;
+        * )
+            if [[ ! -d $1 ]]; then
+                echo "$1 does not exist or is not a directory"
+                exit 1
+            fi
+            fulldir=`cd $1 && pwd`
+            srcdirs[${#srcdirs[*]}]=$fulldir
+            ;;
+    esac
+    shift
+done
+
+if [[ -z $dest ]]; then usage; fi
+
+destdir=
+
+for mpoint in `mount | awk '{print $3}'`; do
+    if [[ ! -d $mpoint ]]; then
+        echo "Mount point $mpoint is not a directory.  I'm confused"
+        exit 1
+    fi
+    if [[ -f $mpoint/$dest ]]; then
+        if [[ -n $destdir ]]; then
+            echo "Destination magic $dest found at multiple mount points"
+            exit 1
+        fi
+        destdir=`dirname $mpoint/$dest`
+        if [[ ! -w $destdir ]]; then
+            echo "Destination directory $destdir is not writable"
+            exit 1
+        fi
+    fi
+done
+
+if [[ -z $destdir ]]; then
+    echo "Failed to find destination magic $dest"
+    # XXX This should probably go to a temporary directory in this
+    # case
+    exit 1
+fi
+
+echo "Found destination directory $destdir"
+
+if [[ ! -f $destdir/key.public ]]; then
+    if [[ ! -f $destdir/key.private ]]; then
+        echo "Destination directory $destdir does not contain a keypair"
+        echo "Please generate one with:"
+        echo "  openssl genrsa -out $destdir/key.private -des3 2048"
+    else
+        fmt <<EOF
+Destination directory $destdir does not contain a public key.
+However, it does appear to contain a private key.  Please run the
+following command to derive the public key from the private key:
+EOF
+    fi
+    echo "  openssl rsa -in $destdir/key.private -out $destdir/key.public -pubout"
+    exit 1
+fi
+
+pubkey=$destdir/key.public
+
+date=`date +'%Y-%m-%d--%H-%M-%S'`
+
+key=$date.key
+script=$date.sh
+filename=$date.tar.gz.des3
+
+tmpkey=/tmp/backup-$$.key
+tmpscript=/tmp/backup-$$.sh
+tmpfilename=/tmp/backup-$$.tar.gz.des3
+
+extrafiles=
+if [[ -n $packages ]]; then
+    echo "Retrieving package list"
+    extrafiles="-C /tmp packages-$date"
+    dpkg --get-selections > /tmp/packages-$date
+fi
+
+# Get the key size
+keysize=`openssl rsa -text -in $pubkey -pubin -noout | \
+    sed 's/Modulus (\([0-9]*\) bit):/\1/;q'`
+
+# Generate a DES3 passphrase
+bytes=`expr $keysize / 8 - 12`
+echo "Generating $bytes byte symmetric key"
+passphrase=`openssl rand $bytes`
+
+# Save the encrypted passphrase
+echo "Encrypting symmetric key to $tmpkey"
+openssl rsautl -encrypt -out $tmpkey -inkey $pubkey -pubin <<<$passphrase
+
+# Create decryption script
+echo "Writing decryption script to $tmpscript"
+cat > $tmpscript <<EOF
+echo Saving decrypted backup to /tmp/backup.tar.gz
+umask u=rw,g=,o=
+openssl rsautl -decrypt -in $key -inkey key.private \\
+| openssl enc -des3 -d -salt -pass stdin -in $filename \\
+> /tmp/backup.tar.gz
+EOF
+chmod a+x $tmpscript
+
+# Create the backup and encrypt it using the generated passphrase
+echo "Creating and encrypting backup to $tmpfilename"
+tar czPf - $0 $extrafiles -C / $srcdirs | \
+    openssl enc -des3 -e -pass fd:3 -salt -out $tmpfilename 3<<<$passphrase
+
+# Move files to the destination directory
+echo "Moving files to $destdir"
+while true; do
+    retry=
+    for var in key script filename; do
+        srcvar=tmp$var
+        src=${!srcvar}
+        dest=${!var}
+        if ! mv $src $destdir/$dest &> /dev/null; then
+            # Move failed.  Move the oldest backup out of the way
+            old=`ls -1 -tr $destdir/*.tar.gz.des3 | \
+            head -n 1 | sed 's/\.tar\.gz\.des3//'`
+            if [[ -z $old ]]; then
+                echo "Not enough space, but no old backups to remove from $destdir"
+                exit 1
+            fi
+            echo "  Moving backup $old.* to /tmp to make room"
+            for ext in tar.gz.des3 key sh; do
+                mv $old.$ext /tmp/
+            done
+            retry=1
+            break
+        fi
+    done
+    if [[ -z $retry ]]; then
+        break
+    fi
+done
+
+echo "SUCCESS!"

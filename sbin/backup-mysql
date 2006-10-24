@@ -1,0 +1,9 @@
+#!/bin/zsh
+
+set -e
+
+date=`date +'%Y-%m-%d--%H-%M-%S'`
+file=mysql-$date.sql.gz
+
+echo Dumping all databases to $file as user root
+exec mysqldump --opt -A -u root -p | gzip -c - > $file

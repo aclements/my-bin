@@ -1,0 +1,57 @@
+#!/bin/zsh
+
+set -e
+
+if [[ $UID != 0 ]]; then
+    echo "Must be run as root"
+    exit 1
+fi
+
+REPOSITORIES=(amthrax sysfiles)
+
+TMPDIR=/tmp/svnbackup-$$
+REPDIR=/z/svn
+
+HOTBACKUP=hot-backup.py
+
+if [[ ! -f $HOTBACKUP ]]; then
+    echo "Could not find $HOTBACKUP"
+    exit 1
+fi
+
+if [[ -d $TMPDIR ]]; then
+    echo "Temp directory $TMPDIR already exists!"
+    exit 1
+fi
+
+mkdir $TMPDIR
+
+for R in $REPOSITORIES; do
+    python hot-backup.py $REPDIR/$R $TMPDIR
+done
+
+FILES=()
+
+for R in $REPOSITORIES; do
+    for F in $TMPDIR/$R-*; do
+        BASE=`basename $F`
+        if [[ -d $F ]]; then
+            OUT=$BASE.tar.bz2
+            echo "Compressing $F to $OUT"
+            tar cjf $OUT -C $TMPDIR $BASE
+            echo "Removing $F"
+            rm -rf $F
+            FILES=($FILES $OUT)
+        fi
+    done
+done
+
+echo "Removing temp directory"
+rmdir $TMPDIR
+
+echo
+echo "Repositories backed up to:"
+for F in $FILES; do
+    echo "  $F"
+done
+echo "Have a nice day."
