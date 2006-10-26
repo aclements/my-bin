@@ -13,7 +13,7 @@ STARTAGENT=1
 
 
 # Find the real ssh
-REALSSH=`whence -a ssh | grep -A1 $0 | sed 1d`
+REALSSH=`whence -a ssh | grep -v $0 | sed 1q`
 if [[ -z $REALSSH ]]; then
     # XXX Probably not in path.  Be more careful about this
     REALSSH=ssh
