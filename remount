@@ -6,7 +6,7 @@ for mount in $mounts; do
     fusermount -u $mount
 done
 
-for host in awakening.mit.edu drake.homelinux.org bender.streambase.com; do
+for host in awakening.mit.edu drake.homelinux.org bender.streambase.com athena.dialup.mit.edu; do
     mountpoint=$HOME/n/mounts/${host%%.*}
     if [[ -d $mountpoint ]]; then
         echo Mounting $host at $mountpoint

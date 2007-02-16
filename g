@@ -55,6 +55,6 @@ else
     FINDARGS=(-maxdepth 1)
 fi
 
-exec find . $FINDARGS \( \( -path "*/.svn" -o -name "*~" -o -path "*/build" -o -path "*/*.tmp" -o -path "*/sandbox" -o -name "semantic.cache" \) -prune \) -o \
+exec find . $FINDARGS \( \( -path "*/.svn" -o -name "*~" -o -name ".#*" -o -path "*/build" -o -path "*/*.tmp" -o -path "*/sandbox" -o -name "semantic.cache" \) -prune \) -o \
     -type f $FINDPREDS -print0 | \
     xargs -0 -e grep $ARGS $PATTERN
