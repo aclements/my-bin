@@ -3,6 +3,7 @@
 # Print the file name and line number
 ARGS=(-H -n)
 
+FINDPATH=
 FINDARGS=()
 FINDPREDS=()
 
@@ -14,9 +15,19 @@ PATTERN=
 while [[ -n $1 ]]; do
     arg=$1
     shift
+    # Long argument?
+    if [[ $arg == --* && $arg != -- ]]; then
+        ARGS=($ARGS $arg)
+        continue
+    fi
     # Recursive?
     if [[ $arg == -r ]]; then
         REC=1
+        continue
+    fi
+    if [[ $arg == -*r* ]]; then
+        REC=1
+        argv=(${arg/r/} $argv)
         continue
     fi
     # Case override?
@@ -25,7 +36,11 @@ while [[ -n $1 ]]; do
         continue
     fi
     # Pattern?
-    if [[ $arg != -* ]]; then
+    if [[ $arg != -* || $arg == -- ]]; then
+        if [[ $arg == -- ]]; then
+            arg=$1
+            shift
+        fi
         PATTERN=$arg
         # If the search pattern had capitalization, perform a
         # case-sensitive grep
@@ -34,7 +49,15 @@ while [[ -n $1 ]]; do
         fi
         # Add predicates for any file globs following the pattern
         for arg in $*; do
-            FINDPREDS=($FINDPREDS -name $arg)
+            if [[ -d $arg ]]; then
+                if [[ -n $FINDPATH ]]; then
+                    echo "Error: Multiple paths given" > /dev/stderr
+                    exit 1
+                fi
+                FINDPATH=$arg
+            else
+                FINDPREDS=($FINDPREDS -name $arg)
+            fi
         done
         break
     fi
@@ -55,6 +78,10 @@ else
     FINDARGS=(-maxdepth 1)
 fi
 
-exec find . $FINDARGS \( \( -path "*/.svn" -o -name "*~" -o -name ".#*" -o -path "*/build" -o -path "*/*.tmp" -o -path "*/sandbox" -o -name "semantic.cache" \) -prune \) -o \
+if [[ -z $FINDPATH ]]; then
+    FINDPATH=.
+fi
+
+exec find $FINDPATH $FINDARGS \( \( -path "*/.svn" -o -name "*~" -o -name ".#*" -o -path "*/build" -o -path "*/*.tmp" -o -path "*/sandbox" -o -name "semantic.cache" \) -prune \) -o \
     -type f $FINDPREDS -print0 | \
-    xargs -0 -e grep $ARGS $PATTERN
+    xargs -0 -e grep $ARGS -- $PATTERN
