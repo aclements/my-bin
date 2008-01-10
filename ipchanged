@@ -1,0 +1,267 @@
+#!/usr/bin/python
+
+# This daemon watches for when your IP address changes and
+# automatically handles the following tasks:
+# * All ssh connections that are still using an old IP are
+#   disconnected (first using SIGTERM, then SIGKILL, which is
+#   necessary if they are blocking on the network, such as sftp
+#   connections)
+# * If Pidgin is still connected through an old IP, its status is
+#   switched to offline and then back to the status it previously had.
+#   (Note that this requires purple-remote, which can be found in the
+#   libpurple-bin package)
+
+# How frequently, in seconds, to poll for an IP change
+POLL_INTERVAL = 1.0
+
+# To do:
+# * Stop amarok when the interface goes away
+# * Lazily unmount Samba when the interface changes
+# * Make the interface more general
+
+import sys, os, stat, errno, time, signal
+import socket, fcntl
+import array, struct
+
+SIOCGIFCONF = 0x8912
+IFNAMSIZ = 16
+SASIZE = 16
+
+def getHostIPs():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM,
+                      socket.IPPROTO_IP)
+    # Repeatedly ask for the interface configuration, increasing the
+    # buffer size until it's larger than the response size
+    bytes = 0
+    ressize = ((IFNAMSIZ + SASIZE) * 4)/2
+    while ressize >= bytes:
+        bytes = ressize*2
+        res = array.array("B", "\0" * bytes)
+        # Pass the size and address of the response buffer
+        req = struct.pack("iL", bytes, res.buffer_info()[0])
+        resinfo = fcntl.ioctl(s, SIOCGIFCONF, req)
+        # Get the actual size of the response
+        ressize, _ = struct.unpack("iL", resinfo)
+    res = res.tostring()
+    # Parse the response
+    out = {}
+    # XXX Apparently these are 40 byte records on 64 bit?
+    for offset in range(0, ressize, IFNAMSIZ+SASIZE):
+        # Each record consists of an IFNAMSIZ null-terminated string
+        # followed by a sockaddr structure
+        name = res[offset:offset+IFNAMSIZ]
+        name = name[:name.find("\0")]
+        addr = res[offset+IFNAMSIZ:offset+IFNAMSIZ+SASIZE]
+        # The sockaddr structure consists of the unsigned short
+        # address family, followed by data
+        afsize = struct.calcsize("H")
+        af, = struct.unpack("H", addr[:afsize])
+        if af == socket.AF_INET:
+            # The sockaddr_in structure consists of the address
+            # family, unsigned short port number, 4 byte in_addr
+            # structure, and padding.
+            inaddroff = struct.calcsize("HH")
+            inaddrsize = 4
+        elif af == socket.AF_INET6:
+            # The sockaddr_in6 structure consists of the address
+            # family, unsigned short port number, unsigned int flow
+            # information, 16 byte in6_addr, and unsigned int byte
+            # scope ID.
+            inaddroff = struct.calcsize("HHI")
+            inaddrsize = 16
+        else:
+            print >> sys.stderr, "%s: Unknown address family %d" % (name, af)
+            continue
+        ip = socket.inet_ntop(af, addr[inaddroff:inaddroff+inaddrsize])
+        out[name] = ip
+    return out
+
+def getAddrToInodeMap():
+    out = {}
+    for ipv6 in (False, True):
+        if ipv6:
+            procname = "tcp"
+            bytes = 4
+            af = socket.AF_INET
+        else:
+            procname = "tcp6"
+            bytes = 16
+            af = socket.AF_INET6
+
+        fp = file("/proc/net/" + procname, "r")
+        header = fp.next()
+        localAddressIdx = header.find("local_address")
+        inodeIdx = header.find("inode")
+        for line in fp:
+            localAddress = line[localAddressIdx:].split()[0]
+            localAddress, _ = localAddress.split(":")
+            localAddress = int(localAddress, 16)
+            if not ipv6:
+                # For added fun, IPv4 addresses are in network order
+                localAddress = socket.ntohl(localAddress)
+            laStr = []
+            for byte in range(bytes):
+                laStr.append((localAddress>>(byte*8))&0xFF)
+            laStr = "".join(map(chr, laStr))
+            localAddress = socket.inet_ntop(af, laStr)
+            inode = int(line[inodeIdx:].split()[0])
+            out.setdefault(localAddress, []).append(inode)
+    return out
+
+def getInodeToPIDMap():
+    out = {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        pid = int(pid)
+        fddir = "/proc/%d/fd" % pid
+        if not os.access(fddir, os.X_OK):
+            continue
+        for fd in os.listdir(fddir):
+            try:
+                path = fddir + "/" + fd
+                # stat may freeze if it tries to follow a symlink to a
+                # network mount, so filter out files syntactically
+                # first
+                if os.readlink(path).startswith("/"):
+                    continue
+                s = os.stat(path)
+            except OSError, e:
+                if e.errno == errno.ENOENT:
+                    # This is okay
+                    continue
+                raise
+            if not stat.S_ISSOCK(s.st_mode):
+                continue
+            out.setdefault(s.st_ino, []).append(pid)
+    return out
+
+def getPIDName(pid):
+    f = "/proc/%d/exe" % pid
+    try:
+        return os.path.basename(os.readlink(f))
+    except OSError, e:
+        if e.errno == errno.ENOENT:
+            raise LookupError()
+        raise
+
+def main():
+    lastUpIPs = {}
+    lastIPs = {}
+
+    firstTime = True
+    while True:
+        if not firstTime:
+            time.sleep(POLL_INTERVAL)
+        else:
+            firstTime = False
+        nowIPs = getHostIPs()
+        if nowIPs == lastIPs:
+            # Common case.  No interface changes
+            continue
+        # Look for interfaces that went down
+        down = []
+        for iface, addr in lastIPs.items():
+            if iface not in nowIPs:
+                down.append(addr)
+        # Look for interfaces that came up
+        up = []
+        for iface, addr in nowIPs.items():
+            if iface not in lastIPs:
+                up.append(addr)
+        lastIPs = nowIPs
+        # Look for interfaces that changed since the last time they
+        # were up
+        changed = []
+        for iface, addr in nowIPs.items():
+            if iface in lastUpIPs and lastUpIPs[iface] != addr:
+                changed.append((lastUpIPs[iface], addr))
+            lastUpIPs[iface] = addr
+
+        if down or up or changed:
+            handle(down, up, changed)
+
+def handle(down, up, changed):
+    for d in down:
+        print >> sys.stderr, "%s went down" % d
+    for u in up:
+        print >> sys.stderr, "%s came up" % u
+    for c in changed:
+        print >> sys.stderr, "%s changed to %s" % c
+
+    # Find processes still bound to the old IP
+    if changed:
+        a2i = getAddrToInodeMap()
+        i2p = getInodeToPIDMap()
+        pids = []
+        for (old, new) in changed:
+            inodes = a2i.get(old, [])
+            for inode in inodes:
+                pids.extend(i2p.get(inode, []))
+        sshs = []
+        pidgin = False
+        for pid in pids:
+            try:
+                name = getPIDName(pid)
+                print "Found %s (%d) using old IP" % (name, pid)
+            except LookupError:
+                continue
+            if name == "ssh":
+                sshs.append(pid)
+            elif name == "pidgin":
+                pidgin = True
+
+        # Kill ssh sessions
+        if sshs:
+            killNicely("ssh", 1, sshs)
+
+        # Reconnect Pidgin
+        if pidgin:
+            print >> sys.stderr, "Reconnecting pidgin"
+            status = purpleGetStatus()
+            if not status:
+                print >> sys.stderr, "Failed to get status"
+            else:
+                purpleSetStatus("offline")
+                purpleSetStatus(status)
+
+def killNicely(procname, delay, pids):
+    for pid in pids:
+        print >> sys.stderr, "Terminating %s %d" % (procname, pid)
+        os.kill(pid, signal.SIGTERM)
+
+    nChecks = int(delay * 10)
+    for check in range(nChecks):
+        time.sleep(0.1)
+        remaining = []
+        for pid in pids:
+            try:
+                if getPIDName(pid) == procname:
+                    remaining.append(pid)
+            except LookupError:
+                continue
+        if not remaining:
+            # All processes died
+            break
+        pids = remaining
+        if check == nChecks - 1:
+            # Kill remaining ones harder
+            for pid in pids:
+                print >> sys.stderr, "Killing %s %d" % (procname, ssh)
+                os.kill(pid, signal.SIGKILL)
+
+def purpleGetStatus():
+    pr = os.popen("purple-remote getstatus")
+    status = pr.read().strip()
+    if pr.close():
+        return None
+    return status
+
+def purpleSetStatus(status):
+    os.spawnlp(os.P_WAIT, "purple-remote", "purple-remote",
+               "setstatus?status=" + status)
+
+# print getHostIPs()
+# print getAddrToInodeMap()
+# print getInodeToPIDMap()
+main()
