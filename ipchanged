@@ -28,6 +28,8 @@ IFNAMSIZ = 16
 SASIZE = 16
 
 def getHostIPs():
+    # This was quite useful as a reference:
+    #   http://mail.nl.linux.org/kernelnewbies/2003-05/msg00090.html
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM,
                       socket.IPPROTO_IP)
     # Repeatedly ask for the interface configuration, increasing the
@@ -193,11 +195,11 @@ def handle(down, up, changed):
     if changed:
         a2i = getAddrToInodeMap()
         i2p = getInodeToPIDMap()
-        pids = []
+        pids = set()
         for (old, new) in changed:
             inodes = a2i.get(old, [])
             for inode in inodes:
-                pids.extend(i2p.get(inode, []))
+                pids.update(i2p.get(inode, []))
         sshs = []
         pidgin = False
         for pid in pids:
@@ -247,7 +249,7 @@ def killNicely(procname, delay, pids):
         if check == nChecks - 1:
             # Kill remaining ones harder
             for pid in pids:
-                print >> sys.stderr, "Killing %s %d" % (procname, ssh)
+                print >> sys.stderr, "Killing %s %d" % (procname, pid)
                 os.kill(pid, signal.SIGKILL)
 
 def purpleGetStatus():
