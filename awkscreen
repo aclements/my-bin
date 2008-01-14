@@ -1,0 +1,7 @@
+#!/bin/zsh
+
+set -e
+
+# I don't know why the sleep 1 is necessary, but without the delay,
+# the other side just freezes up
+autossh -M 0 -t awk "sleep 1 && screen -x"
