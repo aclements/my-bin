@@ -5,7 +5,8 @@
 # * All ssh connections that are still using an old IP are
 #   disconnected (first using SIGTERM, then SIGKILL, which is
 #   necessary if they are blocking on the network, such as sftp
-#   connections)
+#   connections).  Those connected via autossh are reconnected using
+#   autossh.
 # * If Pidgin is still connected through an old IP, its status is
 #   switched to offline and then back to the status it previously had.
 #   (Note that this requires purple-remote, which can be found in the
@@ -110,12 +111,15 @@ def getAddrToInodeMap():
             out.setdefault(localAddress, []).append(inode)
     return out
 
-def getInodeToPIDMap():
-    out = {}
+def pids():
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
             continue
-        pid = int(pid)
+        yield int(pid)
+
+def getInodeToPIDMap():
+    out = {}
+    for pid in pids():
         fddir = "/proc/%d/fd" % pid
         if not os.access(fddir, os.X_OK):
             continue
@@ -144,8 +148,37 @@ def getPIDName(pid):
         return os.path.basename(os.readlink(f))
     except OSError, e:
         if e.errno == errno.ENOENT:
-            raise LookupError()
+            raise LookupError("No such pid %d" % pid)
+        elif e.errno == errno.EACCES:
+            raise LookupError("No access to pid %d" % pid)
         raise
+
+def pidsof(name):
+    out = set()
+    for pid in pids():
+        f = "/proc/%d/exe" % pid
+        try:
+            if os.path.basename(os.readlink(f)) != name:
+                continue
+        except OSError, e:
+            if e.errno == errno.ENOENT or e.errno == errno.EACCES:
+                continue
+            raise
+        out.add(pid)
+    return out
+
+def getPPIDOf(pid):
+    f = "/proc/%d/stat" % pid
+    try:
+        line = file(f, "r").readline()
+    except OSError, e:
+        if e.errno == errno.ENOENT:
+            raise LookupError("No such pid %d" % pid)
+        elif e.errno == errno.EACCES:
+            raise LookupError("No access to pid %d" % pid)
+        raise
+    line = line[line.find(")")+1:]
+    return int(line.split()[1])
 
 def main():
     lastUpIPs = {}
@@ -191,8 +224,8 @@ def handle(down, up, changed):
     for c in changed:
         print >> sys.stderr, "%s changed to %s" % c
 
-    # Find processes still bound to the old IP
     if changed:
+        # Find processes still bound to the old IP
         a2i = getAddrToInodeMap()
         i2p = getInodeToPIDMap()
         pids = set()
@@ -200,7 +233,7 @@ def handle(down, up, changed):
             inodes = a2i.get(old, [])
             for inode in inodes:
                 pids.update(i2p.get(inode, []))
-        sshs = []
+        sshs = set()
         pidgin = False
         for pid in pids:
             try:
@@ -209,12 +242,30 @@ def handle(down, up, changed):
             except LookupError:
                 continue
             if name == "ssh":
-                sshs.append(pid)
+                sshs.add(pid)
             elif name == "pidgin":
                 pidgin = True
 
-        # Kill ssh sessions
         if sshs:
+            # Restart autossh connections
+            autosshs = set()
+            for ssh in sshs:
+                try:
+                    ppid = getPPIDOf(ssh)
+                    if getPIDName(ppid) != "autossh":
+                        continue
+                    autosshs.add(ppid)
+                except LookupError:
+                    pass
+            for autossh in autosshs:
+                print "Reconnecting autossh %d" % autossh
+                try:
+                    os.kill(autossh, signal.SIGUSR1)
+                except OSError:
+                    continue
+            sshs.difference_update(autosshs)
+
+            # Kill remaining ssh sessions
             killNicely("ssh", 1, sshs)
 
         # Reconnect Pidgin
@@ -266,4 +317,5 @@ def purpleSetStatus(status):
 # print getHostIPs()
 # print getAddrToInodeMap()
 # print getInodeToPIDMap()
+#ips = getHostIPs().values(); handle([], [], zip(ips, ips))
 main()
