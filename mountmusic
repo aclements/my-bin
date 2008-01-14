@@ -4,7 +4,7 @@ set -e
 
 if mount | grep 'on [/a-z]*/n/music '; then
     echo "Unmounting"
-    /sbin/umount.cifs ~/n/music
+    /sbin/umount.cifs -l ~/n/music
 fi
 
 # SSH-tunneled connection
