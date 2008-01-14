@@ -291,7 +291,7 @@ def handle(down, up, changed):
                     ppid = getPPIDOf(ssh)
                     if getPIDName(ppid) != "autossh":
                         continue
-                    autosshs.add((ppid, pid))
+                    autosshs.add((ppid, ssh))
                 except LookupError:
                     pass
             for (autossh, ssh) in autosshs:
