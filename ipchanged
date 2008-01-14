@@ -254,11 +254,11 @@ def handle(down, up, changed):
                     ppid = getPPIDOf(ssh)
                     if getPIDName(ppid) != "autossh":
                         continue
-                    autosshs.add(ppid)
+                    autosshs.add((ppid, pid))
                 except LookupError:
                     pass
-            for autossh in autosshs:
-                print "Reconnecting autossh %d" % autossh
+            for (autossh, ssh) in autosshs:
+                print "Reconnecting autossh %d (ssh %d)" % (autossh, ssh)
                 try:
                     os.kill(autossh, signal.SIGUSR1)
                 except OSError:
