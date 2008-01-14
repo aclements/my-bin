@@ -8,7 +8,7 @@ if mount | grep 'on [/a-z]*/n/music '; then
 fi
 
 # SSH-tunneled connection
-SSHCMD="autossh -Nf -L localhost:4445:localhost:445 awakening"
+SSHCMD="autossh -M 0 -Nf -L localhost:4445:localhost:445 awakening"
 PID=`ps axw | grep $SSHCMD | grep -v grep | awk '{print $1}'`
 if [[ ! -z $PID ]]; then
     if [[ $PID != *[^0-9]* ]]; then
