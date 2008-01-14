@@ -13,22 +13,29 @@
 #   libpurple-bin package)
 
 # How frequently, in seconds, to poll for an IP change
-POLL_INTERVAL = 1.0
+POLL_INTERVAL = 2.0
 
 # To do:
 # * Stop amarok when the interface goes away
-# * Lazily unmount Samba when the interface changes
 # * Make the interface more general
 
 import sys, os, stat, errno, time, signal
 import socket, fcntl
 import array, struct
 
+##################################################################
+# IP interface utilities
+#
+
 SIOCGIFCONF = 0x8912
 IFNAMSIZ = 16
 SASIZE = 16
 
 def getHostIPs():
+    """Retrieve all of the host's IP addresses.  These are returned as a
+    dictionary mapping interface names to IP address strings in
+    standard Internet form.  This supports IPv4 and IPv6."""
+
     # This was quite useful as a reference:
     #   http://mail.nl.linux.org/kernelnewbies/2003-05/msg00090.html
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM,
@@ -80,6 +87,10 @@ def getHostIPs():
     return out
 
 def getAddrToInodeMap():
+    """Retrieve a mapping from IP addresses to socket inode numbers.  The
+    return value is a dictionary mapping IP address strings in
+    standard Internet form to lists of inode numbers."""
+
     out = {}
     for ipv6 in (False, True):
         if ipv6:
@@ -111,13 +122,11 @@ def getAddrToInodeMap():
             out.setdefault(localAddress, []).append(inode)
     return out
 
-def pids():
-    for pid in os.listdir("/proc"):
-        if not pid.isdigit():
-            continue
-        yield int(pid)
+def getSockInodeToPIDMap():
+    """Retrieve a mapping from socket inode numbers to process ID's.  The
+    return value is a dictionary mapping inode numbers to lists of
+    process ID's."""
 
-def getInodeToPIDMap():
     out = {}
     for pid in pids():
         fddir = "/proc/%d/fd" % pid
@@ -142,7 +151,23 @@ def getInodeToPIDMap():
             out.setdefault(s.st_ino, []).append(pid)
     return out
 
+##################################################################
+# Process utilities
+#
+
+def pids():
+    """An iterator over all process ID's."""
+
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        yield int(pid)
+
 def getPIDName(pid):
+    """Get the process name of the specified process ID.  This is the base
+    name of the process's binary.  Throws LookupError if the process
+    ID does not exist or cannot be accessed by the current user."""
+
     f = "/proc/%d/exe" % pid
     try:
         return os.path.basename(os.readlink(f))
@@ -154,6 +179,8 @@ def getPIDName(pid):
         raise
 
 def pidsof(name):
+    """Get the process ID's whose name equals the specified name."""
+
     out = set()
     for pid in pids():
         f = "/proc/%d/exe" % pid
@@ -168,6 +195,8 @@ def pidsof(name):
     return out
 
 def getPPIDOf(pid):
+    """Get the parent process ID of the specified process ID."""
+
     f = "/proc/%d/stat" % pid
     try:
         line = file(f, "r").readline()
@@ -179,6 +208,10 @@ def getPPIDOf(pid):
         raise
     line = line[line.find(")")+1:]
     return int(line.split()[1])
+
+##################################################################
+# Main
+#
 
 def main():
     lastUpIPs = {}
@@ -216,6 +249,10 @@ def main():
         if down or up or changed:
             handle(down, up, changed)
 
+##################################################################
+# IP change handling
+#
+
 def handle(down, up, changed):
     for d in down:
         print >> sys.stderr, "%s went down" % d
@@ -227,7 +264,7 @@ def handle(down, up, changed):
     if changed:
         # Find processes still bound to the old IP
         a2i = getAddrToInodeMap()
-        i2p = getInodeToPIDMap()
+        i2p = getSockInodeToPIDMap()
         pids = set()
         for (old, new) in changed:
             inodes = a2i.get(old, [])
@@ -281,7 +318,12 @@ def handle(down, up, changed):
 def killNicely(procname, delay, pids):
     for pid in pids:
         print >> sys.stderr, "Terminating %s %d" % (procname, pid)
-        os.kill(pid, signal.SIGTERM)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError, e:
+            if e.errno == errno.ESRCH:
+                continue
+            raise
 
     nChecks = int(delay * 10)
     for check in range(nChecks):
@@ -301,7 +343,12 @@ def killNicely(procname, delay, pids):
             # Kill remaining ones harder
             for pid in pids:
                 print >> sys.stderr, "Killing %s %d" % (procname, pid)
-                os.kill(pid, signal.SIGKILL)
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError, e:
+                    if e.errno == errno.ESRCH:
+                        continue
+                    raise
 
 def purpleGetStatus():
     pr = os.popen("purple-remote getstatus")
@@ -314,8 +361,7 @@ def purpleSetStatus(status):
     os.spawnlp(os.P_WAIT, "purple-remote", "purple-remote",
                "setstatus?status=" + status)
 
-# print getHostIPs()
-# print getAddrToInodeMap()
-# print getInodeToPIDMap()
-#ips = getHostIPs().values(); handle([], [], zip(ips, ips))
-main()
+if __name__ == "__main__":
+    # Simulate all current IP's changing
+    # ips = getHostIPs().values(); handle([], [], zip(ips, ips))
+    main()
