@@ -296,11 +296,11 @@ def handle(down, up, changed):
                     pass
             for (autossh, ssh) in autosshs:
                 print "Reconnecting autossh %d (ssh %d)" % (autossh, ssh)
+                sshs.remove(ssh)
                 try:
                     os.kill(autossh, signal.SIGUSR1)
                 except OSError:
                     continue
-            sshs.difference_update(autosshs)
 
             # Kill remaining ssh sessions
             killNicely("ssh", 1, sshs)
