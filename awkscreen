@@ -1,7 +1,11 @@
-#!/bin/zsh
+#!/bin/sh
 
 set -e
 
-# I don't know why the sleep 1 is necessary, but without the delay,
-# the other side just freezes up
-autossh -M 0 -t awk "sleep 1 && screen -x"
+if which autossh > /dev/null 2>&1; then
+    # I don't know why the sleep 1 is necessary, but without the
+    # delay, the other side just freezes up
+    autossh -M 0 -t awk "sleep 1 && screen -x"
+else
+    ssh -t awk "screen -x"
+fi
