@@ -2,25 +2,38 @@
 
 set -e
 
+STYLE=autossh
+
 if mount | grep 'on [/a-z]*/n/music '; then
     echo "Unmounting"
     /sbin/umount.cifs -l ~/n/music
 fi
 
 # SSH-tunneled connection
-SSHCMD="autossh -M 0 -Nf -L localhost:4445:localhost:445 awakening"
-PID=`ps axw | grep $SSHCMD | grep -v grep | awk '{print $1}'`
-if [[ ! -z $PID ]]; then
-    if [[ $PID != *[^0-9]* ]]; then
+FWD="-L localhost:4445:localhost:445 awakening"
+if [[ $STYLE == autossh ]]; then
+    SSHCMD="$STYLE -M 0 -Nf $FWD"
+else
+    SSHCMD="$STYLE -Nf $FWD"
+fi
+PID=`ps w -C $STYLE | grep -- $FWD | awk '{print $1}'`
+if [[ -z $PID ]]; then
+    echo "Creating SSH tunnel"
+    eval $SSHCMD
+elif [[ $PID != *[^0-9]* ]]; then
+    if [[ $STYLE == autossh ]]; then
+        echo "Reconnecting old SSH tunnel ($PID)"
+        kill -USR1 $PID
+    else
         echo "Closing old SSH tunnel ($PID)"
         kill $PID
-    else
-        echo "Confused when trying to find old SSH tunnels ($PID)"
-        exit 1
+        echo "Creating new SSH tunnel"
+        eval $SSHCMD
     fi
+else
+    echo "Confused when trying to find old SSH tunnels ($PID)"
+    exit 1
 fi
-echo "Creating SSH tunnel"
-eval $SSHCMD
 
 echo "Mounting"
 /sbin/mount.cifs //localhost/music ~/n/music -o username=amthrax,uid=amthrax,gid=amthrax,port=4445
