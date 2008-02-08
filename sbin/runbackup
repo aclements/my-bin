@@ -1,0 +1,361 @@
+#!/bin/bash
+
+# To do:
+# * Make the script differentiate remote and local and use sudo
+#   instead of ssh when possible
+
+JAILDIR=/root/.backupjail-$$
+STAMPFILE=
+STAMP=(1 0 0 0)
+
+NOW=
+DRY=
+
+set -e
+
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ME=$(cd -P -- $(dirname -- "$0") && pwd -P)/$(basename -- "$0")
+
+#
+# Configuration processing
+#
+
+resetconfig() {
+    TARGET=
+    SSHIDENT=
+    EVERY=
+    OFFSET=
+    TRIES=
+    INCLUDEEXCLUDE=()
+}
+
+readconfig() {
+    resetconfig
+    CFGLINE=0
+    CFGFILE=$1
+    local line
+    while read line; do
+        CFGLINE=$(($CFGLINE + 1))
+        # Strip comments
+        local line=${line%%#*}
+        if [[ $line =~ '^ *$' ]]; then
+            continue
+        fi
+        # Split line
+        if [[ ! ( $line =~ '^ *([^ ]*) +(.+)$' ) ]]; then
+            configerror "Syntax error"
+        fi
+        # Process line
+        configline "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    done < $CFGFILE
+    checkconfig
+}
+
+configerror() {
+    echo "$CFGFILE:$CFGLINE: Invalid configuration line."
+    echo "  $1"
+    exit 1
+}
+
+configline() {
+    case $1 in
+        target)
+            if [[ -n $TARGET ]]; then
+                configerror "'target' already set"
+            fi
+            TARGET=$2;;
+        sshident)
+            if [[ -n $SSHIDENT ]]; then
+                configerror "'sshident' already set"
+            fi
+            SSHIDENT=$2;;
+        every)
+            if [[ -n $EVERY ]]; then
+                configerror "'every' already set"
+            fi
+            EVERY=`parsetimedelta "$2"`
+            if [[ -z $EVERY ]]; then
+                configerror "Malformed 'every' setting"
+            fi;;
+        offset)
+            if [[ -n $OFFSET ]]; then
+                configerror "'offset' already set"
+            fi
+            OFFSET=`parsetimedelta "$2"`
+            if [[ -z $OFFSET ]]; then
+                configerror "Malformed 'offset' setting"
+            fi;;
+        tries)
+            if [[ -n $TRIES ]]; then
+                configerror "'tries' already set"
+            fi
+            TRIES=$2
+            if [[ ! ( $TRIES =~ '[0-9]+' ) ]]; then
+                configerror "'tries' must be a number"
+            fi;;
+        exclude|include|exclude-if-present)
+            INCLUDEEXCLUDE=("${INCLUDEEXCLUDE[@]}" "--$1" "$2");;
+        *)
+            configerror "Unknown option $1"
+    esac
+}
+
+checkconfig() {
+    if [[ -z $TARGET ]]; then
+        echo "No 'target' specified in configuration file"
+        exit 1
+    elif [[ -z $SSHIDENT ]]; then
+        echo "No 'sshident' specified in configuration file"
+        exit 1
+    elif [[ ${#INCLUDEEXCLUDE[@]} == 0 ]]; then
+        echo "No 'include/exclude' specified in configuration file"
+        exit 1
+    fi
+
+    if [[ -z $NOW ]]; then
+        if [[ -z $EVERY ]]; then
+            echo "No 'every' specified in configuration file and no -now argument"
+            exit 1
+        elif [[ -z $OFFSET ]]; then
+            echo "No 'offset' specified in configuration file and no -now argument"
+            exit 1
+        fi
+        if [[ -z $TRIES ]]; then
+            TRIES=3
+        fi
+    fi
+}
+
+#
+# Scheduling
+#
+
+parsetimedelta() {
+    local spec=$1
+    local delta=0
+    local labels=(d h m s)
+    local factors=(24 60 60 1)
+    while [[ ${#labels[@]} != 0 ]]; do
+        if [[ $spec =~ "^([0-9]+)${labels[0]}(\$| +)(.*)" ]]; then
+            delta=$(( delta + ${BASH_REMATCH[1]} ))
+            spec=${BASH_REMATCH[3]}
+        fi
+        delta=$(( $delta * ${factors[0]} ))
+        labels=(${labels[@]:1})
+        factors=(${factors[@]:1})
+    done
+    if [[ -n $spec ]]; then
+        echo "Error parsing time specification at $spec" > /dev/stderr
+        return 1
+    fi
+    echo $delta
+}
+
+checkepoch() {
+    local NOW=`date +%s`
+
+    # Fix offset to be in UTC
+    if [[ $(date +%::z) =~ '([-+])([0-9]+):([0-9]+):([0-9])' ]]; then
+        local tzsecs=$(( ${BASH_REMATCH[2]} * 60 * 60 +
+                ${BASH_REMATCH[3]} * 60 + ${BASH_REMATCH[4]} ))
+        if [[ ${BASH_REMATCH[1]} == '-' ]]; then
+            tzsecs=$(( 0 - $tzsecs ))
+        fi
+        OFFSET=$(( OFFSET - $tzsecs ))
+    else
+        echo "Error parsing local timezone"
+        exit 1
+    fi
+
+    # If the stamp doesn't exist, then we definitely need to update
+    if [[ ! -e $STAMPFILE ]]; then
+        return 0
+    fi
+
+    # Otherwise, parse the timestamp file
+    if [[ `wc -l < $STAMPFILE` != 1 ]]; then
+        echo "Malformed timestamp file; not a single line"
+        exit 1
+    elif ! egrep -q '^1 ' $STAMPFILE; then
+        echo "Malformed timestamp file; invalid version number"
+        exit 1
+    elif ! egrep -q '^[0-9 ]+$' $STAMPFILE; then
+        echo "Malformed timestamp file; not space separated numbers"
+        exit 1
+    fi
+    STAMP=($(cat $STAMPFILE))
+    if [[ ${#STAMP[@]} != 4 ]]; then
+        echo "Malformed timestamp file; expected four fields"
+        exit 1
+    fi
+
+    # Compare epochs
+    local lastepoch=$(( ( ${STAMP[1]} - $OFFSET ) / $EVERY ))
+    local tryepoch=$(( ( ${STAMP[2]} - $OFFSET ) / $EVERY ))
+    local curepoch=$(( ( $NOW - $OFFSET ) / $EVERY ))
+    if (( $lastepoch > $curepoch || $tryepoch > $curepoch )); then
+        echo "Malformed timestamp file; last backup in future?"
+        echo "  Success epoch: $lastepoch (${STAMP[1]})"
+        echo "  Try epoch: $tryepoch (${STAMP[2]})"
+        echo "  Current epoch: $curepoch ($NOW)"
+        exit 1
+    fi        
+
+    # echo "  Success epoch: $lastepoch (${STAMP[1]})"
+    # echo "  Try epoch: $tryepoch (${STAMP[2]})"
+    # echo "  Current epoch: $curepoch ($NOW)"
+
+    if (( $lastepoch == $curepoch )); then
+        # We've succeeded in this epoch; don't back up
+        if test -t 0; then
+            echo "Latest backup was too recent; use -now to force a backup"
+        fi
+        return 1
+    else
+        # We're in a different epoch; check if we've failed too many
+        # times in this epoch
+        if (( $tryepoch != $curepoch )); then
+            # We haven't tried in this epoch
+            return 0
+        else
+            # This isn't our first try in this epoch
+            local pasttries=${STAMP[3]}
+            if (( $pasttries >= $TRIES )); then
+                # We've failed too many time this epoch
+                if test -t 0; then
+                    echo "Too many recent failures; use -now to force a backup"
+                fi
+                return 1
+            else
+                echo "Retrying" $(( $pasttries + 1 )) "of" $TRIES
+                return 0
+            fi
+        fi
+    fi
+}
+
+updatetimestampfail() {
+    STAMP[2]=`date +%s`
+    STAMP[3]=$(( ${STAMP[3]} + 1 ))
+    echo ${STAMP[@]} > $STAMPFILE
+}
+
+updatetimestamp() {
+    STAMP[1]=`date +%s`
+    STAMP[2]=${STAMP[1]}
+    STAMP[3]=0
+    echo ${STAMP[@]} > $STAMPFILE
+}
+
+#
+# Jail management
+#
+
+jailme() {
+    echo "Creating backup jail at $JAILDIR"
+    if [[ -e $JAILDIR ]]; then
+        echo "Jail directory already exists"
+        exit 1
+    fi
+    mkdir $JAILDIR
+    trap rmjail EXIT
+
+    echo "Mounting backup jail"
+    rofs -o dev / $JAILDIR
+    trap unmountjail EXIT
+
+    echo "Entering backup jail"
+    chroot $JAILDIR $ME $CFGFILE "${CFGARGS[@]}" -jailed
+}
+
+rmjail() {
+    echo "Deleting backup jail"
+    rmdir $JAILDIR || echo "Failed to delete backup jail"
+}
+
+unmountjail() {
+    # No idea why sleep 1 is necessary, but without it the device may
+    # be busy.  I suspect the chroot is not immediately torn down
+    sleep 1
+    echo "Unmounting backup jail"
+    umount $JAILDIR || echo "Failed to unmount backup jail"
+    rmjail
+}
+
+#
+# Backup
+#
+
+backup() {
+    echo "Connecting to backup server"
+
+    if test -t 0; then
+        VERB="--terminal-verbosity 5"
+    else
+        VERB=
+    fi
+
+#    python -c 'import sys; print sys.argv' \
+    rdiff-backup \
+        --remote-schema "/usr/bin/ssh -C -i $SSHIDENT %s ./rbackupc rdserve" \
+        $VERB \
+        --print-statistics \
+        "${INCLUDEEXCLUDE[@]}" \
+        --exclude / \
+        / $TARGET
+}
+
+if [[ $# == 0 ]]; then
+    echo "No configuration file specified"
+    exit 1
+fi
+
+CFGFILE=$(cd -P -- $(dirname -- "$1") && pwd -P)/$(basename -- "$1")
+if [[ ! -f $CFGFILE ]]; then
+    echo "Configuration file $CFGFILE is not a file"
+    exit 1
+fi
+STAMPFILE=$(dirname -- "$CFGFILE")/.$(basename -- "$CFGFILE").stamp
+shift
+
+CFGARGS=("$@")
+
+while true; do
+    if [[ $1 == "-now" ]]; then
+        NOW=1
+        shift
+    elif [[ $1 == "-dry" ]]; then
+        DRY=1
+        shift
+    else
+        break
+    fi
+done
+
+readconfig $CFGFILE
+
+if [[ $# == 0 ]]; then
+    if [[ -z $NOW ]]; then
+        if ! checkepoch; then
+            exit 0
+        fi
+    fi
+    echo "==== $(hostname) ===="
+    if jailme; then
+        updatetimestamp
+        exit 0
+    else
+        updatetimestampfail
+        exit 1
+    fi
+elif [[ $# == 1 && $1 == -jailed ]]; then
+    if [[ -z $DRY ]]; then
+        backup
+    else
+        echo "Dry-run: Skipping backup"
+    fi
+    exit 0
+fi
+
+echo "Unexpected arguments"
+exit 1
