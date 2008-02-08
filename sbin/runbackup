@@ -38,11 +38,13 @@ readconfig() {
         CFGLINE=$(($CFGLINE + 1))
         # Strip comments
         local line=${line%%#*}
-        if [[ $line =~ '^ *$' ]]; then
+        PAT='^ *$'              # See Ubuntu bug 110407
+        if [[ $line =~ $PAT ]]; then
             continue
         fi
         # Split line
-        if [[ ! ( $line =~ '^ *([^ ]*) +(.+)$' ) ]]; then
+        PAT='^ *([^ ]*) +(.+)$'
+        if [[ ! ( $line =~ $PAT ) ]]; then
             configerror "Syntax error"
         fi
         # Process line
@@ -90,7 +92,8 @@ configline() {
                 configerror "'tries' already set"
             fi
             TRIES=$2
-            if [[ ! ( $TRIES =~ '[0-9]+' ) ]]; then
+            PAT='[0-9]+'
+            if [[ ! ( $TRIES =~ $PAT ) ]]; then
                 configerror "'tries' must be a number"
             fi;;
         exclude|include|exclude-if-present)
@@ -136,7 +139,8 @@ parsetimedelta() {
     local labels=(d h m s)
     local factors=(24 60 60 1)
     while [[ ${#labels[@]} != 0 ]]; do
-        if [[ $spec =~ "^([0-9]+)${labels[0]}(\$| +)(.*)" ]]; then
+        PAT="^([0-9]+)${labels[0]}(\$| +)(.*)"
+        if [[ $spec =~ $PAT ]]; then
             delta=$(( delta + ${BASH_REMATCH[1]} ))
             spec=${BASH_REMATCH[3]}
         fi
@@ -155,7 +159,8 @@ checkepoch() {
     local NOW=`date +%s`
 
     # Fix offset to be in UTC
-    if [[ $(date +%::z) =~ '([-+])([0-9]+):([0-9]+):([0-9])' ]]; then
+    PAT='([-+])([0-9]+):([0-9]+):([0-9])'
+    if [[ $(date +%::z) =~ $PAT ]]; then
         local tzsecs=$(( ${BASH_REMATCH[2]} * 60 * 60 +
                 ${BASH_REMATCH[3]} * 60 + ${BASH_REMATCH[4]} ))
         if [[ ${BASH_REMATCH[1]} == '-' ]]; then
