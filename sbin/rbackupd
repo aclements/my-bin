@@ -1,0 +1,629 @@
+#!/usr/bin/python
+
+import os, sys, threading, traceback, glob, time, re, sha
+from SocketServer import ThreadingUnixStreamServer, StreamRequestHandler
+
+##################################################################
+# User-editable configuration
+#
+
+# The directory on which to mount the backup partition
+DEST = "/media/backup"
+# The name of the socket to listen on for commands
+SOCKNAME = "/tmp/rbackupd-sock"
+# The model of the USB drive to use as the backup drive.
+#MODEL = "5QG0BQ4K"                      # 500 GB Seagate
+MODEL = "3QD00E76"                      # 750 GB Seagate
+# Either None, or the double SHA-1 of the LUKS password.  This is used
+# for checking the password command, because otherwise it can't
+# recognize an incorrect password until mount time.
+LUKSSHA = "f0c023f98c37577ce756211bdae24bac049985fb"
+
+# This daemon requires the following sudo configuration:
+# rbackup ALL=(root) NOPASSWD: \
+#         /bin/mount /dev/mapper/sd[a-z]1 /media/backup, \
+#         /bin/umount /media/backup, \
+#         /sbin/cryptsetup status sd[a-z]1, \
+#         /sbin/cryptsetup --key-file - luksOpen /dev/sd[a-z]1 sd[a-z]1, \
+#         /sbin/cryptsetup luksClose sd[a-z]1
+
+
+# Commands
+# * password <pass> - Set the backup partition password
+# * backup - Check which backups need to be performed according to the
+#   policy and perform those.  If a backup is currently in progress,
+#   returns immediately with an error.  Outputs statistics and logging
+#   information and closes the connection when done.
+# * backupNow <name> - Immediately perform a backup of <name>.
+#   Returns with an error if a backup is currently in progress.
+
+# The abstract backup task has a scheduling policy (including which
+# partitions it should go to when), an abstract method to determine
+# the age of a backup on disk, and an abstract method to perform the
+# backup operation.  Derived from this is a file backup task, a MySQL
+# backup task, a SVN backup task, and a command output backup task.
+#
+# The scheduling policy specifies a set of times during which a backup
+# can be performed, a minimum time between backups, and the
+# best-effort minimum time since the previous failure before trying
+# again.
+
+backupLock = threading.Lock()
+luksPassword = None
+
+class BackupError(RuntimeError):
+    pass
+
+class Schedule(object):
+    def __init__(self, minTimeSinceSuccess, minTimeSinceFailure):
+        """minTimeSinceSuccess and minTimeSinceFailure are in seconds."""
+
+        self.__minTimeSinceSuccess = minTimeSinceSuccess_secs
+        self.__minTimeSinceFailure = minTimeSinceFailure_secs
+        self.__windows = []
+
+    def addHourWindow(self, start, end):
+        assert end > start
+        assert 0 <= end < 24
+        assert 0 <= start < 24
+        self.__windows.append((start, end))
+
+    def inWindow(self):
+        t = time.localtime()
+        hour = t.tm_hour + t.tm_min/60. + t.tm_sec/3600.
+        for (s,e) in self.__windows:
+            if s <= hour < e:
+                return True
+        return False
+
+    def minTimeSinceSuccess(self):
+        return self.__minTimeSinceSuccess
+
+    def minTimeSinceFailure(self):
+        return self.__minTimeSinceFailure
+
+    def satisfied(self, lastEventTime = None, wasSuccess = None):
+        if lastEventTime == None:
+            return True
+        assert wasSuccess != None
+        now = time.time()
+        if wasSuccess:
+            minTime = self.__minTimeSinceSuccess
+        else:
+            minTime = self.__minTimeSinceFailure
+        if now - lastSuccess > minTime:
+            return True
+        return False
+
+class TimeParseError(ValueError): pass
+
+def parseIsoTime(string):
+    # Format: YYYY-MM-DDTHH:MM:SS+HH:MM
+    m = re.match("([0-9]{4})-([0-9]{2})-([0-9]{2})T"+
+                 "([0-9]{2}):([0-9]{2}):([0-9]{2})"+
+                 "([+-])([0-9]{2}):([0-9]{2})",
+                 string)
+    if not m:
+        raise TimeParseError, s
+    year, month, day, hour, minute, second, offDir, offHour, offMin = m.groups()
+    year, month, day, hour, minute, second, offHour, offMin = \
+          map(int, (year, month, day, hour, minute, second, offHour, offMin))
+    if not (0 < month <= 12 and
+            0 < day <= 31 and
+            0 <= hour < 24 and
+            0 <= minute < 60 and
+            0 <= second <= 61 and
+            0 <= offHour < 12 and
+            0 <= offMin < 60):
+        raise TimeParseError, s
+    secs = time.mktime((year, month, day, hour, minute, second, -1, -1, 0))
+    print secs
+    mktimeOffset = time.mktime(time.gmtime(0))
+    print mktimeOffset
+    fixedSecs = secs - mktimeOffset
+    print fixedSecs
+    if offDir == "-":
+        tzOffsetDir = 1
+    else:
+        tzOffsetDir = -1
+    utcSec = fixedSecs + tzOffsetDir * (offHour*60*60 + offMin*60)
+
+    return utcSec
+
+def formatIsoTime(utcSecs, utcOffsetMins = None):
+    if utcOffsetMins == None:
+        if time.localtime().tm_isdst:
+            utcOffsetSecs = -time.altzone
+        else:
+            utcOffsetSecs = -time.timezone
+        if utcOffsetSecs % 60 != 0:
+            raise ValueError, "Local UTC offset has non-zero seconds"
+        return formatIsoTime(utcSecs, utcOffsetSecs/60)
+
+    utcSecs = int(utcSecs)
+    ts = time.gmtime(utcSecs+utcOffsetMins*60)
+    base = time.strftime("%Y-%m-%dT%H:%M:%S", ts)
+    if utcOffsetMins < 0:
+        base += "-"
+    else:
+        base += "+"
+    base += "%02d:%02d" % (abs(utcOffsetMins) / 60, abs(utcOffsetMins) % 60)
+
+    return base
+
+class AbstractBackupTask(object):
+    def __init__(self, schedule):
+        self.__schedule = schedule
+
+    def getSchedule(self):
+        return self.__schedule
+
+class TaskCollection(object):
+    def __init__(self, tasks):
+        self.__tasks = tasks
+
+def execute(cmd, *args, **kwargs):
+    def executeKW(sendStr = None, readStdout = False):
+        return sendStr, readStdout
+    sendStr, readStdout = executeKW(**kwargs)
+
+    if sendStr:
+        fromMe, toIt = os.pipe()
+    else:
+        fromMe, toIt = None, None
+
+    if readStdout:
+        fromIt, toMe = os.pipe()
+    else:
+        fromIt, toMe = None, None
+
+    show = cmd
+    for a in args:
+        a = a.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$')
+        if ' ' in a:
+            a = '"' + a + '"'
+        else:
+            for c in "~!*()[|;<>?":
+                a = a.replace(c,'\\'+c)
+        show += " " + a
+    print "Executing %s" % show
+
+    child = os.fork()
+    if child == 0:
+        # Setup stdin
+        if fromMe:
+            os.dup2(fromMe, 0)
+            os.close(toIt)
+        else:
+            os.close(0)
+        # Setup stdout
+        if toMe:
+            os.dup2(toMe, 1)
+            os.close(fromIt)
+        else:
+            os.dup2(sys.stdout.fileno(), 1)
+        # Setup stderr
+        os.dup2(sys.stdout.fileno(), 2)
+        # Exec
+        os.execlp(cmd, cmd, *args)
+
+    if toIt:
+        os.close(fromMe)
+        del fromMe
+        os.fdopen(toIt, "w").write(sendStr)
+
+    if fromIt:
+        os.close(toMe)
+        del toMe
+        result = os.fdopen(fromIt, "r").read()
+    else:
+        result = None
+
+    (pid, res) = os.waitpid(child, 0)
+    if not os.WIFEXITED(res) or os.WEXITSTATUS(res) != 0:
+        p = cmd + " " + " ".join(["'" + arg + "'" for arg in args])
+        if os.WIFEXITED(res):
+            desc = "Exit code %d" % os.WEXITSTATUS(res)
+        elif os.WIFSIGNALLED(res):
+            desc = "Signal %d" % os.WTERMSIG(res)
+        elif os.WIFSTOPPED(res):
+            desc = "Stopped by %d" % os.WSTOPSIG(res)
+        else:
+            desc = "Unknown code %d" % res
+        msg = "Command %s failed: %s" % (p, desc)
+        print msg
+        raise ValueError, msg
+    return result
+
+##################################################################
+# Information retrieval
+#
+
+def getMounts():
+    fp = file("/proc/mounts")
+    mounts = {}
+    for line in fp:
+        parts = line.split()
+        if len(parts) != 6:
+            fp.close()
+            raise ValueError, "Unparsable line in /proc/mounts: %s" % `line`
+        mounts[parts[1]] = parts[0]
+    fp.close()
+    return mounts
+
+def findDevice():
+    for dev in glob.glob("/sys/block/sd?"):
+        modelFile = "%s/device/model" % dev
+        if os.path.exists(modelFile):
+            f = file(modelFile, "r")
+            if f.read().strip() == MODEL:
+                # Found it
+                devID = dev.split("/")[-1] + "1"
+                blockDev = "/dev/%s" % devID
+                print "USB drive found on %s" % blockDev
+                break
+    else:
+        raise BackupError, "Unable to find USB drive"
+
+    return blockDev
+
+def getLUKSInfo(mapID):
+    """Returns a dictionary of LUKS information for the given LUKS ID, or
+    None if the mapping does not exist.  The dictionary will contain
+    values for mapDev, cipher, keysize, device, offset, size, and
+    mode."""
+    
+    mapDev = "/dev/mapper/%s" % mapID
+    if not os.path.exists(mapDev):
+        return None
+
+    info = execute("sudo", "cryptsetup", "status", mapID,
+                   readStdout = True)
+    lines = info.split("\n")
+    fl = lines[0].split(" ")
+    if len(fl) != 3 or fl[1] != "is" or fl[2] != "active:":
+        raise ValueError, "Unparsable first line in 'cryptsetup status %s': %s" \
+            % (mapID, `line[0]`)
+    lines = lines[1:]
+    info = {}
+    info["mapDev"] = fl[0]
+    for l in lines:
+        if not len(l):
+            continue
+        parts = l.split(": ")
+        if len(parts) != 2:
+            raise ValueError, "Unparsable line in 'cryptsetup status %s': %s" \
+                  % (mapID, `l`)
+        info[parts[0].strip()] = parts[1].strip()
+    return info
+
+##################################################################
+# Low-level mounting and mapping operations
+#
+
+def mountDevice(device, dest):
+    """Mounts device on dest.  If an exception is raised, it is guaranteed
+    that this will have had no ultimate effect."""
+
+    mounts = getMounts()
+    if dest in mounts:
+        if mounts[dest] == device:
+            raise BackupError, \
+                "%s is already mounted on %s" % (device, dest)
+        else:
+            raise BackupError, \
+                "%s is mounted on %s" % (mounts[dest], dest)
+
+    print "Mounting %s on %s" % (device, dest)
+    try:
+        execute("sudo", "mount", device, dest)
+    except:
+        print "Mounting failed"
+        if dest in getMounts():
+            print "Mount found; umounting."
+            execute("sudo", "umount", DEST)
+        raise
+
+def unmountDevice(dest):
+    """Unmount the directory dest."""
+
+    if dest not in getMounts():
+        raise ValueError, \
+            "Cannot unmount %s because it is not mounted." % dest
+
+    print "Unmounting %s" % dest
+    execute("sudo", "umount", dest)
+
+def mapDevice(blockDev):
+    """Constructs a decrypted mapping of blockDev to a new device.
+    Returns a pair of the full device name and the LUKS ID of the
+    mapping."""
+
+    if luksPassword == None:
+        raise BackupError, "Backup partition password not set"
+
+    mapID = blockDev.split("/")[-1]
+    mapDev = "/dev/mapper/%s" % mapID
+    deadDev = "/dev/.static/dev/%s" % mapID
+
+    luksInfo = getLUKSInfo(mapID)
+    if luksInfo:
+        device = luksInfo.get("device")
+        if not device:
+            raise ValueError, "Unable to find 'device' field in LUKS info"
+        if device == blockDev:
+            # In this case, the mapping already exists, and
+            # the underlying hardware device is still present
+            raise BackupError, \
+                "%s is already mapped to %s" % (blockDev, mapDev)
+        elif device == deadDev:
+            # The USB drive detached without cleaning up the mount
+            raise BackupError, \
+                "Stale mapping from %s to %s found" % (blockDev, mapDev)
+        else:
+            raise BackupError, "%s is mapped to %s" % (device, mapDev)
+
+    print "Mapping %s to %s with decryption" % (blockDev, mapDev)
+    try:
+        execute("sudo", "cryptsetup", "--key-file", "-",
+                "luksOpen", blockDev, mapID,
+                sendStr = luksPassword)
+    except:
+        print "Mapping failed"
+        if getLUKSInfo(mapID):
+            print "Mapping found.  Unmapping"
+            execute("sudo", "cryptsetup", "luksClose", mapID)
+        raise
+    return (mapDev, mapID)
+
+def unmapDevice(mapID):
+    """Destroys the mapping with LUKS ID mapID."""
+
+    luksInfo = getLUKSInfo(mapID)
+
+    if not luksInfo:
+        raise ValueError, \
+            "Cannot unmap LUKS device %s because it does not exist." % mapID
+    mapDev = luksInfo["mapDev"]
+
+    print "Umapping %s" % mapDev
+    execute("sudo", "cryptsetup", "luksClose", mapID)
+
+##################################################################
+# High-level operations
+#
+
+def mount():
+    blockDev = findDevice()
+    (mapDev, mapID) = mapDevice(blockDev)
+    try:
+        mountDevice(mapDev, DEST)
+    except:
+        # XXX Unmap, carefully
+        unmapDevice(mapID)
+        raise
+
+def umount():
+    mounts = getMounts()
+    if DEST not in mounts:
+        raise BackupError, \
+            "%s is not mounted" % DEST
+
+    # Figure out what the mapping name is
+    mapDev = mounts[DEST]
+    mapPieces = mapDev.split("/")
+    if not (len(mapPieces) == 4 and
+            mapPieces[0] == "" and
+            mapPieces[1] == "dev" and
+            mapPieces[2] == "mapper" and
+            mapPieces[3].startswith("sd")):
+        raise ValueError, \
+              "Cannot unmap: %s is mounted from unknown device %s" % \
+              (DEST, mapDev)
+    mapID = mapPieces[-1]
+
+    unmountDevice(DEST)
+    unmapDevice(mapID)
+
+##################################################################
+# Locking
+#
+
+backupLock = threading.Lock()
+blReason = ""
+
+REASON_BACKING_UP = "A backup is currently in progress"
+REASON_USER_MOUNT = "The backup partition has been mounted by the user"
+
+def acquireBackup(reason):
+    global blReason
+    if not backupLock.acquire(False):
+        raise BackupError, blReason
+    blReason = reason
+
+def checkBackupLock(reason):
+    if not backupLock.locked():
+        raise BackupError, \
+            "The backup lock is not currently held"
+    if blReason != reason:
+        raise BackupError, \
+            "The backup lock is held for another reason: " + blReason
+
+def releaseBackup():
+    backupLock.release()
+
+##################################################################
+# Commands
+#
+
+class Command(object):
+    nArgs = 0
+
+    def __init__(self, rq, args):
+        self.rq = rq
+        self.handle(*args)
+
+    def handle(self, *x):
+        pass
+
+class CmdPassword(Command):
+    nArgs = 1
+
+    def handle(self, password):
+        global luksPassword
+        if (LUKSSHA and
+            sha.new(sha.new(password).hexdigest()).hexdigest() != LUKSSHA):
+            raise BackupError, "Incorrect password"
+        luksPassword = password
+
+class CmdMount(Command):
+    def handle(self):
+        acquireBackup(REASON_USER_MOUNT)
+        try:
+            mount()
+        except:
+            releaseBackup()
+            raise
+
+class CmdUmount(Command):
+    def handle(self):
+        checkBackupLock(REASON_USER_MOUNT)
+        umount()
+        releaseBackup()
+
+class CmdBackupMount(Command):
+    def handle(self):
+        acquireBackup(REASON_BACKING_UP)
+        try:
+            mount()
+            print "=== Ready ==="
+            print DEST
+            (cmd, args) = self.rq.getCommand()
+            if cmd != "continue" or len(args) != 0:
+                raise ProtocolError, "Expected continue command, got %s" % `cmd`
+        finally:
+            try:
+                umount()
+            except:
+                print >> sys.stderr, "Unmount failed in backupMount"
+                traceback.print_exc()
+                pass
+            releaseBackup()
+
+commands = {"password" : CmdPassword,
+            "mount" : CmdMount,
+            "umount" : CmdUmount,
+            "backupMount" : CmdBackupMount}
+
+##################################################################
+# Server
+#
+
+class ProtocolError(RuntimeError):
+    pass
+
+class ThreadLocalFD(object):
+    localFD = threading.local()
+
+    def __init__(self, original):
+        self.__original = original
+
+    def setLocalTarget(self, target, fileno=None):
+        self.localFD.fd = target
+        if fileno:
+            self.localFD.fileno = fileno
+        else:
+            self.localFD.fileno = target.fileno()
+
+    def resetLocalTarget(self):
+        try:
+            del self.localFD.fd
+            del self.localFD.fileno
+        except AttributeError:
+            pass
+
+    def write(self, value):
+        try:
+            fd = self.localFD.fd
+        except AttributeError:
+            fd = self.__original
+        try:
+            fd.write(value)
+        except:
+            print >> sys.stderr, "Error writing to thread-local FD"
+            traceback.print_exc()
+            print >> sys.stderr, "Resetting to regular FD"
+            self.resetLocalTarget()
+
+    def fileno(self):
+        try:
+            return self.localFD.fileno
+        except AttributeError:
+            return self.__original.fileno()
+
+class RequestHandler(StreamRequestHandler):
+    def setup(self):
+        StreamRequestHandler.setup(self)
+        print "Incoming connection"
+
+    def getCommand(self):
+        args = []
+        while True:
+            arg = self.rfile.readline()
+            if len(arg) == 0 or arg[-1] != "\n":
+                raise ProtocolError, "Unexpected EOF in argument list"
+            if arg == "\n":
+                break
+            args.append(arg[:-1])
+        if len(args) < 1:
+            raise ProtocolError, "No command given"
+        return args[0], args[1:]
+
+    def handle(self):
+        try:
+            cmd, args = self.getCommand()
+            if cmd in commands:
+                expect = commands[cmd].nArgs
+                if expect != len(args):
+                    raise ProtocolError, \
+                          "%s command expected %d arguments, got %d" % \
+                          (`cmd`, expect, len(args))
+                if cmd != "password":
+                    print "Handling command %s %s" % (cmd, args)
+                else:
+                    print "Handling command %s ***" % (cmd)
+                try:
+                    sys.stdout.setLocalTarget(self.wfile,
+                                              self.connection.fileno())
+                    commands[cmd](self, args)
+                finally:
+                    sys.stdout.resetLocalTarget()
+            else:
+                raise ProtocolError, "Unknown command %s" % `cmd`
+        except BackupError, msg:
+            print >> self.wfile, msg
+            raise
+        except:
+            print >> self.wfile, "An unhandled exception was raised:"
+            print >> self.wfile
+            traceback.print_exc(None, self.wfile)
+            raise
+
+    def finish(self):
+        print "Disconnected"
+        StreamRequestHandler.finish(self)
+
+def startServer():
+    s = ThreadingUnixStreamServer(SOCKNAME, RequestHandler)
+    sys.stdout = ThreadLocalFD(sys.stdout)
+    print "Serving on %s" % SOCKNAME
+    s.serve_forever()
+
+if __name__ == "__main__":
+    try:
+        startServer()
+    except:
+        if os.path.exists(SOCKNAME):
+            print "Freeing socket %s" % SOCKNAME
+            os.unlink(SOCKNAME)
+        raise
