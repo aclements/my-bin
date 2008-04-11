@@ -1,0 +1,43 @@
+#!/bin/zsh
+
+set -e
+
+copy() {
+    ENTRIES=$(awk 'BEGIN {FS="/"}; { print $2, $1 }' < $1/CVS/Entries)
+    for ent in ${(f)ENTRIES}; do
+        filename=${ent%% *}
+        typ=${ent#* }
+        if [[ -z $typ ]]; then
+            target=$2/$filename
+            if [[ -e $target ]]; then
+                echo "Target file $target already exists"
+                exit 1
+            fi
+            $N cp $1/$filename $target
+        elif [[ $typ == "D" ]]; then
+            if [[ -z $filename ]]; then
+                # Indicates there are no subdirectories
+                continue
+            fi
+            target=$2/$filename
+            if [[ -e $target ]]; then
+                echo "Target directory $target already exists"
+                exit 1
+            fi
+            $N mkdir $target
+            copy $1/$filename $target
+        else
+            echo "Unrecognized entry type $typ"
+            exit 1
+        fi
+    done
+}
+
+if [[ $1 == -n ]]; then
+    shift
+    N=echo copy $(cd $1; pwd) $(pwd)
+else
+    # Check for errors first
+    N=true copy $(cd $1; pwd) $(pwd)
+    copy $(cd $1; pwd) $(pwd)
+fi

@@ -1,0 +1,21 @@
+#!/usr/bin/zsh
+
+setopt extended_glob
+
+SPAM=~/Mail/spam
+HAM=~/Mail/^(spam*|reuse|Trash|sent-mail|postponed|virusin)(.)
+
+EXTRA=
+if [[ -t 1 ]]; then
+    ISATTY=1
+    EXTRA="--progress"
+fi
+
+echo "Scanning spam"
+sa-learn $EXTRA --mbox --spam ${~SPAM}
+
+echo "Scanning ham"
+sa-learn $EXTRA --mbox --ham ${~HAM}
+
+echo "Cleaning up spam"
+sys/bin/splitspam

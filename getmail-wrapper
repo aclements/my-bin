@@ -1,0 +1,13 @@
+#!/bin/zsh
+
+LOCKFILE=~/.getmail/dont-be-stupid
+
+if lockfile -r 0 $LOCKFILE; then
+    getmail $*
+    rm -f $LOCKFILE
+else
+    echo "Lock file exists; not running getmail"
+    echo
+    echo "'ps auxw | grep getmail | grep -v grep' says:"
+    ps auxw | grep getmail | grep -v grep
+fi

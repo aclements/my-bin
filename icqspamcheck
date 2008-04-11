@@ -1,0 +1,85 @@
+#!/usr/bin/python
+
+import sys
+
+def main():
+    if len(sys.argv) > 1:
+        for f in sys.argv[1:]:
+            msg = file(f,"r").read()
+            if isSpam(msg):
+                print f,"is spam"
+            else:
+                print f,"is ham"
+    else:
+        msg = sys.stdin.read()
+        if isSpam(msg):
+            sys.exit(1)
+
+def isSpam(msg):
+    prologue = "* Authorization request : "
+    if msg.startswith(prologue):
+        msg = msg[len(prologue):]
+
+    if (fcp(msg) > 0.4 or
+        exe(msg) or
+        onlyurl(msg) or
+        msg.lower().startswith("privet") or
+        msg.lower().startswith("uslugi") or
+        msg.lower().startswith("uslugu") or
+        msg.lower().startswith("earth") or
+        ruurl(msg) or
+        " porno " in msg.lower()):
+        return True
+    return False
+
+# Foreign character percent
+def fcp(msg):
+    upper = 0
+    lower = 0
+    for c in msg:
+        if ord(c) > 127 or c == '?':
+            upper += 1
+        else:
+            lower += 1
+    if lower+upper == 0:
+        return 0
+    return upper/float(lower+upper)
+
+def gethost(word):
+    if word.startswith("http://"):
+        return word.split("/")[2]
+    elif word.startswith("www."):
+        return word.split("/")[0]
+    else:
+        return None
+
+# Are there links to executables?
+def exe(msg):
+    for word in msg.split():
+        if gethost(word) and word.endswith(".exe"):
+            return True
+    return False
+
+# Is there only a URL in the message?
+def onlyurl(msg):
+    words = msg.split()
+    if len(words) == 1 and gethost(words[0]):
+        return True
+    return False
+
+# Is there a Russian URL in the message?
+def ruurl(msg):
+    for word in msg.split():
+        host = gethost(word)
+        if host and host.endswith(".ru"):
+            return True
+    return False
+
+try:
+    main()
+except SystemExit, v:
+    sys.exit(v)
+except:
+    import traceback
+    traceback.print_exc()
+    sys.exit(0)
