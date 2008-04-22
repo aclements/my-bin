@@ -2,6 +2,9 @@
 
 set -e
 
+export AUTOSSH_PATH=`which ssh`
+
+
 if which autossh > /dev/null 2>&1; then
     # I don't know why the sleep 1 is necessary, but without the
     # delay, the other side just freezes up

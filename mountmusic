@@ -12,6 +12,7 @@ fi
 # SSH-tunneled connection
 FWD="-L localhost:4445:localhost:445 awakening"
 if [[ $STYLE == autossh ]]; then
+    export AUTOSSH_PATH=`which ssh`
     SSHCMD="$STYLE -M 0 -Nf $FWD"
 else
     SSHCMD="$STYLE -Nf $FWD"
