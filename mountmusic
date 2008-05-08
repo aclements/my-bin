@@ -37,4 +37,4 @@ else
 fi
 
 echo "Mounting"
-/sbin/mount.cifs //localhost/music ~/n/music -o username=amthrax,uid=amthrax,gid=amthrax,port=4445
+/sbin/mount.cifs //localhost/music ~/n/music -o username=amthrax,uid=amthrax,gid=amthrax,port=4445,iocharset=utf8
