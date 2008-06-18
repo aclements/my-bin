@@ -18,6 +18,17 @@ POLL_INTERVAL = 2.0
 # To do:
 # * Stop amarok when the interface goes away
 # * Make the interface more general
+# * Ping something before deciding that the interface really is up
+#   * Maybe something that some process is connected to?
+# * Look for processes bound to _any_ non-current IP
+#   * Hmm.  What if ipchanged is started when an interface that was up
+#     isn't any more?
+#   * Maybe it should just keep track of _all_ stale IP's it's seen
+# * Restart things if there's a long enough time between the interface
+#   going down and coming back up
+# * Watching for IP changes on specific interfaces isn't exactly the
+#   right way to do things, since a wireless interface may go down and
+#   a wired interface come back in its place
 
 import sys, os, stat, errno, time, signal
 import socket, fcntl
@@ -112,7 +123,12 @@ def getAddrToInodeMap():
             localAddress = int(localAddress, 16)
             if not ipv6:
                 # For added fun, IPv4 addresses are in network order
-                localAddress = socket.ntohl(localAddress)
+                try:
+                    localAddress = socket.ntohl(localAddress)
+                except OverflowError:
+                    # This happens every few weeks
+                    print "OverflowError converting", `localAddress`, "from line", `line`
+                    raise
             laStr = []
             for byte in range(bytes):
                 laStr.append((localAddress>>(byte*8))&0xFF)
