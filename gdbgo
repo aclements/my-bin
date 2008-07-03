@@ -8,8 +8,8 @@ done
 
 PROG=$1
 shift
-ARGS=$*
 
-echo set args $ARGS > /tmp/gdb-args-$!
+echo set args ${(q)*} > /tmp/gdb-args-$$
+echo shell rm /tmp/gdb-args-$$ >> /tmp/gdb-args-$$
 
-exec gdb $GARGS $PROG -x /tmp/gdb-args-$!
+exec gdb $GARGS $PROG -x /tmp/gdb-args-$$
