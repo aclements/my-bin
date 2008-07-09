@@ -1,5 +1,19 @@
 #!/bin/zsh
 
+if [[ -e "~/.emacs_server" ||
+      -e "/tmp/esrv${UID}-$(hostname)" ||
+      -e "/tmp/emacs$UID/server" ]]; then
+    SERVER_RUNNING=1
+else
+    SERVER_RUNNING=
+fi
+
+if [[ -n $SSH_CONNECTION && -z $SERVER_RUNNING ]]; then
+    echo "Forwarding to ${SSH_CONNECTION%% *}"
+    exec ssh -ax ${SSH_CONNECTION%% *} \
+        cd `pwd` \&\& SSH_CONNECTION= `which ec` $*
+fi
+
 typeset -A args
 
 for arg in $*; do
@@ -12,8 +26,13 @@ for arg in $*; do
 done
 
 
-if [[ -e "~/.emacs_server" || -e "/tmp/esrv${UID}-$(hostname)" ]]; then
-    # The emacs server appears to be running.  Call upon it
+if [[ -n $SERVER_RUNNING ]]; then
+    # The emacs server appears to be running
+    # Create new frame if requested
+    if [[ `basename $0` == ecc ]]; then
+        emacsclient -e '(new-frame)'
+    fi
+    # Open files
     for fname in ${(k)args}; do
         emacsclient -n $args[$fname] $fname > /dev/null
     done
