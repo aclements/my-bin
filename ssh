@@ -21,7 +21,7 @@ fi
 EXTRAARGS=
 
 is_agent_running() {
-    [[ -z $SSH_AGENT_PID ]] && return 1
+    [[ -z $SSH_AUTH_SOCK ]] && return 1
     ssh-add -l &> /dev/null
     local res=$?
     if (( $res == 0 )); then
