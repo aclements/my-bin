@@ -1,0 +1,260 @@
+# -*- shell-script -*-
+
+# The UUID of a volume that should be on the target host.  If set,
+# this is used as a sanity check before stomping on the host, just in
+# case DHCP decided to change the host's address.
+#VERIFYUUID=46cafb70-2f096cb4-496f-0030485ab60e
+
+vsethost() {
+    if [[ -n $1 ]]; then
+        VHOST=$1
+    elif [[ -f ~/.defaulthost ]]; then
+        VHOST="$(cat ~/.defaulthost)"
+    fi
+    if [[ -z $VHOST ]]; then
+        fmt "No host specified.  Specify one using either -h or ~/.defaulthost" 2>&1
+        exit 1
+    fi
+    VCRED=root@$VHOST
+    VSSH=(ssh $VCRED)
+}
+
+vsimpleargs() {
+    local -a pat
+    while [[ -n $1 && $1 != -- ]]; do
+        pat=($pat $1)
+        shift
+    done
+    local -a patcopy
+    patcopy=($pat)
+    if [[ -z $1 ]]; then
+        echo "vsimpleargs: Bug: No argument separator"
+        exit 1
+    fi
+    shift
+    local invname=$1
+    shift
+    if [[ $1 == -h ]]; then
+        vsethost $2
+        shift 2
+    else
+        vsethost
+    fi
+    while (( $# && ${#pat} )); do
+        if [[ ${pat[1]} = \[*\] ]]; then
+            var=${pat[1][2,-2]}
+        else
+            var=${pat[1]}
+        fi
+        typeset -g ${var}="$1"
+        shift
+        shift 1 pat
+    done
+    if [[ -n $1 || ( -n ${pat[1]} && ${pat[1]} != \[*\] ) ]]; then
+        echo "Usage: $invname [-h host] $patcopy"
+        exit 1
+    fi
+}
+
+vbegin() {
+    echo -n $* "..." 1>&2
+}
+
+vend() {
+    echo "" $* 1>&2
+}
+
+if [[ -z $VMTREE ]]; then
+    if [[ $PWD == */bora/* ]]; then
+        VMTREE=${PWD%/bora/*}/bora
+    elif [[ -d bora || $PWD == */bora ]]; then
+        VMTREE=$PWD
+    fi
+    if [[ -n $VMTREE ]]; then
+        echo "Warning: VMTREE not set.  Guessing $VMTREE" 1>&2
+    fi
+fi
+
+vbora() {
+    if [[ -n $VMTREE ]]; then
+        echo $VMTREE
+    else
+        echo "Not in bora" 1>&2
+        exit 1
+    fi
+}
+
+vgetbuildtype() {
+    if [[ -z $VBUILDTYPE ]]; then
+        vbegin "Determining build type of host"
+        local ub="$($VSSH uname -a | awk '{print $6}')"
+        case $ub in
+            OPT) VBUILDTYPE=opt;;
+            DEBUG) VBUILDTYPE=obj;;
+            *) vend "Unknown: $ub"; exit 1;;
+        esac
+        vend $VBUILDTYPE
+    fi
+    if [[ -n $1 ]]; then
+        typeset -g $1=$VBUILDTYPE
+    else
+        echo $VBUILDTYPE
+    fi
+}
+
+vcheckmd5() {
+    vbegin "Checking md5sum of $2"
+    local lmd5="$(md5sum < $1)"
+    local rmd5="$($VSSH [ ! -e $2 ] \|\| md5sum \< $2)"
+
+    if [[ $lmd5 = $rmd5 ]]; then
+        vend "up to date"
+        return 0
+    else
+        if [[ -z $rmd5 ]]; then
+            vend "remote file missing"
+        else
+            vend "out of date"
+        fi
+        return 1
+    fi
+}
+
+vsendapp() {
+    cd `vbora`
+
+    local bt=
+    vgetbuildtype bt
+    local app=build/scons/build/$1/$bt/uw32/$1
+
+    if [[ ! -f $app ]]; then
+        echo "No such file $app" 1>&2
+        exit 1
+    fi
+
+    scp $app ${VCRED}:${2:-/}
+}
+
+vsendmod() {
+    cd `vbora`
+
+    local bt=
+    vgetbuildtype bt
+    local mod=build/scons/package/devel/linux32/$bt/esx/vmkmod-vmkernel64-signed/$1
+
+    if [[ ! -f $mod ]]; then
+        echo "No such file $mod" 1>&2
+        exit 1
+    fi
+
+    if vcheckmd5 $mod /mod/$1; then
+        return
+    fi
+
+    local loaded=0
+    if $VSSH vmkload_mod -l | grep -q $1; then
+        loaded=1
+        vbegin "Unloading $1"
+        local over=
+        local msg=
+        while [[ -z $over ]]; do
+            if ! msg="$($VSSH vmkload_mod -u $1 \&\& rm /mod/$1)"; then
+                local res=$?
+                if [[ $msg = *"in use"* ]]; then
+                    echo -n "."
+                    sleep 1
+                else
+                    vend $msg
+                    exit $res
+                fi
+            else
+                over=1
+            fi
+        done
+        vend $msg
+    else
+        $VSSH [ ! -e /mod/$1 ] \|\| rm /mod/$1
+    fi
+
+    scp $mod ${VCRED}:/mod/
+
+    if [[ $loaded == 1 ]]; then
+        local -a args
+        if [[ $1 == vmfs3 ]]; then
+            args=($args -e)
+        fi
+        vbegin "Loading $1" $args
+        $VSSH vmkload_mod $args $1
+        if [[ $1 == vmfs3 ]]; then
+            vbegin "Rescanning volumes"
+            $VSSH vmkfstools -V
+            vend done
+        fi
+    fi
+}
+
+vwaitforssh() {
+    local first=1
+    while ! nc -w 3 -q 1 $VHOST ssh < /dev/null >& /dev/null; do
+        if [[ $first == 1 ]]; then
+            echo -n "Waiting for SSH" 1>&2
+            first=0
+        fi
+        echo -n "." 1>&2
+        sleep 1
+    done
+    if [[ $first == 0 ]]; then
+        echo " SSH up" 1>&2
+    fi
+}
+
+vsetup() {
+    cd `vbora`
+
+    # Wait for SSH to come up
+    vwaitforssh
+
+    # Try to ssh in
+    local probe="$(ssh -o 'StrictHostKeyChecking yes' $VCRED true |& \
+        grep 'REMOTE HOST IDENT\|Host key verification failed' || true)"
+
+    # Reset the host key if necessary
+    local newhost=0
+    if [[ $probe == *"REMOTE"* ]]; then
+        echo "Resetting host key" 1>&2
+        ssh-keygen -R $VHOST
+        newhost=1
+    elif [[ $probe == *"Host key"* ]]; then
+        newhost=1
+    fi
+
+    # If we didn't recognize the host key or had to reset it, it's a
+    # new host
+    if [[ $newhost == 1 ]]; then
+        vbegin "Recognizing new host"
+        ssh -o 'StrictHostKeyChecking no' $VCRED true >& /dev/null
+        vend done
+    fi
+
+    # Verify the host before we do anything host-side
+    if [[ -n $VERIFYUUID ]]; then
+        vbegin "Sanity checking host volume UUID"
+        if ! $VSSH ls /vmfs/volumes/$VERIFYUUID >& /dev/null; then
+            vend "FAILED"
+            echo "The volume $VERIFYUUID was not present on the host," \
+                "suggesting that this is not the host you were looking for." \
+                "For more details, see VERIFYUUID in vfunctions." | fmt
+            if ! read -q "?Continue anyways? (y/N)"; then
+                exit 1
+            fi
+        else
+            vend done
+        fi
+    fi
+
+    if [[ $newhost == 1 ]]; then
+        vbegin "Enabling VNC"
+        $VSSH echo 'RemoteDisplay.vnc.enabled=\"TRUE\"' \>\> /etc/vmware/config
+        vend done
+    fi
+}

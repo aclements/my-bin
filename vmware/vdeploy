@@ -1,0 +1,14 @@
+#!/bin/zsh
+
+set -e
+
+source `dirname $0`/vfunctions
+vsimpleargs -- $0 $*
+
+cd `vbora`/..
+
+if [[ -f deploy ]]; then
+    source ./deploy
+else
+    echo "Unable to find tree-local deploy script"
+fi

@@ -1,0 +1,3 @@
+#!/bin/zsh
+
+emacs --eval '(progn (find-file "thoughts.txt") (longlines-mode) (find-file "notes.txt") (find-file "tasks") (load-library "tasks-mode") (tasks-mode) (server-start))'

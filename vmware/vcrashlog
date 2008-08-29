@@ -1,0 +1,20 @@
+#!/bin/zsh
+
+set -e
+
+if (( $# != 1 )); then
+    echo "Usage: $0 host"
+    exit 1
+fi
+
+P=$(ssh root@$1 esxcfg-dumppart -t \| awk '{print\ \$2}')
+if [[ $P != /vmfs/devices/* ]]; then
+    echo "Invalid dump partition $P"
+    exit 1
+fi
+F=$(ssh root@$1 esxcfg-dumppart -L $P \| awk '/Created/{print\ \$3}')
+if [[ $F != vmkernel-log.* ]]; then
+    echo "Invalid log file $F"
+    exit 1
+fi
+ssh root@$1 cat $F \&\& rm $F

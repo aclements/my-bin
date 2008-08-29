@@ -1,0 +1,25 @@
+#!/bin/zsh
+
+# Austin Clements' wrapper for the VMware scons wrapper wrapper
+# script.  Based in part on ~mparient/bin/dscons
+
+cd `wherebora`
+
+HOST=
+if [[ $1 == '-r' ]]; then
+    shift
+    HOST=$1
+    shift
+fi
+
+unsetopt MULTIOS
+
+(
+    if [[ -n $HOST ]]; then;
+        echo cd `pwd` \; DBC_ENV=0 scons ${(q)*} | ssh -t $HOST $SHELL -ls;
+    else;
+        DBC_ENV=0 scons $*;
+    fi
+) 3>&1 1>&2 2>&3 | awk '{printf "\033[1;31m%s\033[0m\n", $0}'
+
+exit ${pipestatus[0]}

@@ -1,0 +1,7 @@
+#!/bin/zsh
+
+set -e
+
+source `dirname $0`/vfunctions
+vsimpleargs APPALIAS \[DESTPATH\] -- $0 $*
+vsendapp $APPALIAS $DESTPATH

@@ -1,0 +1,17 @@
+#!/bin/zsh
+
+set -e
+
+source `dirname $0`/vfunctions
+vsimpleargs -- $0 $*
+
+while true; do
+    vwaitforssh
+    ssh -o "ConnectTimeout 5" -o "ServerAliveInterval 15" \
+        -o "UserKnownHostsFile /dev/null" -o "StrictHostKeyChecking no" \
+        $VCRED cat /dev/klog || true
+    echo "vklog: Restarting SSH"
+    if [[ $1 != -h ]]; then
+        vsethost
+    fi
+done
