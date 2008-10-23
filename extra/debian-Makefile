@@ -1,0 +1,2 @@
+Packages.gz: *.deb
+	apt-ftparchive packages . | gzip > Packages.gz
