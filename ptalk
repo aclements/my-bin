@@ -1,0 +1,128 @@
+#!/usr/bin/python
+
+import sys, os, re
+import datetime
+import textwrap
+import subprocess
+import tempfile
+
+fp = sys.stdin
+
+ParseError = RuntimeError
+
+def getBlock(fp = fp):
+    block = []
+    for l in fp:
+        if len(l.strip()):
+            block.append(l)
+        else:
+            if len(block):
+                break
+    return block
+
+def parseColonBlock(bl):
+    res = {}
+    for l in bl:
+        c = l.find(":")
+        if c == -1:
+            continue
+        res[l[:c].lower()] = l[c+1:].strip()
+    return res
+
+def parseTalk():
+    # Skip the headers
+    getBlock()
+
+    # Find the title/speaker/host block
+    r = re.compile("^speaker:|^host:", re.I | re.M)
+    while True:
+        bl = "".join(getBlock())
+        if not bl:
+            raise ParseError("Failed to find title block")
+        gr = r.search(bl)
+        if gr:
+            baseTitle = bl[:gr.start()].split("\n")
+            break
+
+    # Date/Time/Location block
+    bl = parseColonBlock(getBlock())
+    if "date" not in bl:
+        raise ParseError("No date found")
+    baseDate = bl["date"]
+    if "time" not in bl:
+        raise ParseError("No time found")
+    baseTime = bl["time"]
+    if "location" not in bl:
+        raise ParseError("No location found")
+    baseLoc = bl["location"]
+
+    # Parse title
+    lineRe = re.compile(".*(seminar|lecture) series|colloquium", re.I)
+    simplifyRes = [(re.compile("^\\[[^]]*\\]\\s*"), ""),
+                   (re.compile("\\s{2,}"), " ")]
+    title = []
+    for l in baseTitle:
+        for (r, sub) in simplifyRes:
+            l = r.sub(sub, l)
+        if lineRe.match(l):
+            continue
+        title.append(l.strip())
+    if not title:
+        raise ParseError("Unable to simplify title")
+    title = " ".join(title)
+
+    # Parse date
+    m = re.match("([0-9]{1,2})-([0-9]{1,2})-([0-9]{4})", baseDate)
+    if m:
+        date = datetime.date(int(m.group(3)), int(m.group(1)), int(m.group(2)))
+    else:
+        raise ParseError("Unable to parse date")
+
+    # Parse time
+    m = re.match("([0-9]{1,2}:[0-9]{2}) ([AP])M - ([0-9]{1,2}:[0-9]{2}) ([AP])M",
+                 baseTime)
+    if m:
+        time = (m.group(1) + m.group(2).lower() + "-" +
+                m.group(3) + m.group(4).lower())
+    else:
+        raise ParseError("Unable to parse time")
+
+    # Parse location
+    rs = [(re.compile("\\b(patil|kiva|(32-)?g449)\\b", re.I), "Kiva"),
+          (re.compile("\\b(star|(32-)?d463)\\b", re.I), "Star"),
+          (re.compile("^([gd][0-9]{3})$", re.I), "32-\\1")]
+    for (r, sub) in rs:
+        m = r.match(baseLoc)
+        if m:
+            loc = m.expand(sub)
+            break
+    else:
+        loc = baseLoc
+
+    return (title, date, time, loc)
+
+def talkToTasks(serverSocket = "/tmp/tasks-server"):
+    title, date, time, loc = parseTalk()
+
+    fout = tempfile.NamedTemporaryFile("w")
+    print >> fout, date.strftime("%A, %B %e, %Y")
+    print >> fout, textwrap.fill(title,
+                                 initial_indent    = " - %s [Talk] " % time,
+                                 subsequent_indent = "    ")
+    print >> fout, "     Location: %s" % loc
+    fout.flush()
+
+    ec = subprocess.Popen(
+        ["emacsclient", "-s", serverSocket,
+         "-e", "(tasks-insert-from-file \"%s\")" % fout.name],
+        stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
+    out = ec.stdout.read()
+    if ec.wait() != 0:
+        raise RuntimeError("emacsclient failed with exit code %d" % res)
+    if out.startswith("error: "):
+        raise RuntimeError("Failed to insert task: %s" % out[7:].strip())
+
+    fout.close()
+
+if __name__ == "__main__":
+    talkToTasks()
