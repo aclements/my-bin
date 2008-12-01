@@ -57,7 +57,7 @@ def parseTalk():
     baseLoc = bl["location"]
 
     # Parse title
-    lineRe = re.compile(".*(seminar|lecturer?) series|colloquium", re.I)
+    lineRe = re.compile(".*((seminar|lecturer?) series|colloquium)", re.I)
     simplifyRes = [(re.compile("^\\[[^]]*\\]\\s*"), ""),
                    (re.compile("\\s{2,}"), " ")]
     title = []
