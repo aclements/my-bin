@@ -15,24 +15,37 @@
 # How frequently, in seconds, to poll for an IP change
 POLL_INTERVAL = 2.0
 
+# How long an IP can be down for before it's considered dead
+GRACE_SECS = 20
+#GRACE_SECS = 2
+
+# A regular expression that should match the interface names for which
+# up/down events should be considered.  This is useful to filter out
+# interfaces that don't actually go to the Internet.
+INTERFACE_RE = "(eth|wlan)[0-9]+$"
+# XXX Perhaps doing something based on routing tables would be better.
+# After all, most connections decide which interface to bind to based
+# on the destination address.  As a first pass, we could consider only
+# the interface that has/had the default gateway, but we might be able
+# to do something smarter by classifying each destination IP based on
+# the routing table.  So, for example, when an interface comes up, we
+# look at what part of the IP space it will route and only restart
+# autossh connections to IP's in that space.
+# * In this model, do I even care what the host's IP addresses are?
+# ** Yes.  At the last I need to map routing interface to source IP so
+#    I can tell when the source IP for a destination changes
+# * This would also avoid problems with restarting connections before
+#   the routes for a newly up interface are installed
+
 # To do:
 # * Stop amarok when the interface goes away
-# * Make the interface more general
 # * Ping something before deciding that the interface really is up
 #   * Maybe something that some process is connected to?
-# * Look for processes bound to _any_ non-current IP
-#   * Hmm.  What if ipchanged is started when an interface that was up
-#     isn't any more?
-#   * Maybe it should just keep track of _all_ stale IP's it's seen
-# * Restart things if there's a long enough time between the interface
-#   going down and coming back up
-# * Watching for IP changes on specific interfaces isn't exactly the
-#   right way to do things, since a wireless interface may go down and
-#   a wired interface come back in its place
 
 import sys, os, stat, errno, time, signal
 import socket, fcntl
 import array, struct
+import re
 
 ##################################################################
 # IP interface utilities
@@ -40,7 +53,27 @@ import array, struct
 
 SIOCGIFCONF = 0x8912
 IFNAMSIZ = 16
-SASIZE = 16
+if struct.calcsize("P") == 8:
+    IFREQSIZ = 40
+else:
+    IFREQSIZ = 32
+
+def getSystemInfo():
+    code = """
+#include <sys/ioctl.h>
+#include <net/if.h>
+#include <stdio.h>
+int main(void) {
+  printf("SIOCGIFCONF = 0x%x\\n", SIOCGIFCONF);
+  printf("IFNAMSIZ = %d\\n", IFNAMSIZ);
+  printf("IFREQSIZ = %d\\n", sizeof(struct ifreq));
+}
+"""
+    gcc = os.popen("gcc -o /tmp/ipchanged-info -xc -", "w")
+    gcc.write(code)
+    if gcc.close() != None:
+        raise RuntimeError, "gcc failed"
+    os.system("/tmp/ipchanged-info")
 
 def getHostIPs():
     """Retrieve all of the host's IP addresses.  These are returned as a
@@ -54,7 +87,7 @@ def getHostIPs():
     # Repeatedly ask for the interface configuration, increasing the
     # buffer size until it's larger than the response size
     bytes = 0
-    ressize = ((IFNAMSIZ + SASIZE) * 4)/2
+    ressize = (IFREQSIZ * 4)/2
     while ressize >= bytes:
         bytes = ressize*2
         res = array.array("B", "\0" * bytes)
@@ -66,13 +99,12 @@ def getHostIPs():
     res = res.tostring()
     # Parse the response
     out = {}
-    # XXX Apparently these are 40 byte records on 64 bit?
-    for offset in range(0, ressize, IFNAMSIZ+SASIZE):
+    for offset in range(0, ressize, IFREQSIZ):
         # Each record consists of an IFNAMSIZ null-terminated string
         # followed by a sockaddr structure
         name = res[offset:offset+IFNAMSIZ]
         name = name[:name.find("\0")]
-        addr = res[offset+IFNAMSIZ:offset+IFNAMSIZ+SASIZE]
+        addr = res[offset+IFNAMSIZ:offset+IFREQSIZ]
         # The sockaddr structure consists of the unsigned short
         # address family, followed by data
         afsize = struct.calcsize("H")
@@ -97,14 +129,23 @@ def getHostIPs():
         out[name] = ip
     return out
 
-def getAddrToInodeMap():
-    """Retrieve a mapping from IP addresses to socket inode numbers.  The
-    return value is a dictionary mapping IP address strings in
-    standard Internet form to lists of inode numbers."""
+##################################################################
+# Process information
+#
+
+cache = {}
+
+def getInodeToAddrMap():
+    """Retrieve a mapping from socket inode numbers to IP addresses.
+    The return value is a dictionary mapping inumbers to IP address
+    strings in standard Internet form."""
+
+    if getInodeToAddrMap in cache:
+        return cache[getInodeToAddrMap]
 
     out = {}
     for ipv6 in (False, True):
-        if ipv6:
+        if not ipv6:
             procname = "tcp"
             bytes = 4
             af = socket.AF_INET
@@ -122,49 +163,77 @@ def getAddrToInodeMap():
             localAddress, _ = localAddress.split(":")
             localAddress = int(localAddress, 16)
             if not ipv6:
-                # For added fun, IPv4 addresses are in network order
+                # For added fun, IPv4 addresses are in host order
+                # because they're just dumps of the bytes of and int.
+                # For example, D300A8C0.  However, IPv6 addresses are
+                # given in network order.  For example,
+                # 0000000000000000FFFF0000D300A8C0.
                 try:
-                    localAddress = socket.ntohl(localAddress)
+                    localAddress = socket.htonl(localAddress)
                 except OverflowError:
-                    # This happens every few weeks
+                    # This used to happen because I had swapped the
+                    # test of IPv6 above
                     print "OverflowError converting", `localAddress`, "from line", `line`
                     raise
+            # Convert to a packed string, preserving byte order
             laStr = []
-            for byte in range(bytes):
+            for byte in range(bytes-1,-1,-1):
                 laStr.append((localAddress>>(byte*8))&0xFF)
             laStr = "".join(map(chr, laStr))
+            # Format the address
             localAddress = socket.inet_ntop(af, laStr)
             inode = int(line[inodeIdx:].split()[0])
-            out.setdefault(localAddress, []).append(inode)
+            out[inode] = localAddress
+    cache[getInodeToAddrMap] = out
     return out
 
-def getSockInodeToPIDMap():
-    """Retrieve a mapping from socket inode numbers to process ID's.  The
-    return value is a dictionary mapping inode numbers to lists of
-    process ID's."""
+def getSockInodesOfPID(pid):
+    """Retrieve a set of socket inode numbers open by the given PID.
+    Throws LookupError if the process ID does not exist or cannot be
+    accessed by the current user."""
 
-    out = {}
-    for pid in pids():
-        fddir = "/proc/%d/fd" % pid
-        if not os.access(fddir, os.X_OK):
-            continue
-        for fd in os.listdir(fddir):
-            try:
-                path = fddir + "/" + fd
-                # stat may freeze if it tries to follow a symlink to a
-                # network mount, so filter out files syntactically
-                # first
-                if os.readlink(path).startswith("/"):
-                    continue
-                s = os.stat(path)
-            except OSError, e:
-                if e.errno == errno.ENOENT:
-                    # This is okay
-                    continue
-                raise
-            if not stat.S_ISSOCK(s.st_mode):
+    out = set()
+    fddir = "/proc/%d/fd" % pid
+    try:
+        files = os.listdir(fddir)
+    except OSError, e:
+        if e.errno == errno.ENOENT:
+            raise LookupError("No such pid %d" % pid)
+        elif e.errno == errno.EACCES:
+            raise LookupError("No access to pid %d" % pid)
+        raise
+    for fd in files:
+        try:
+            path = fddir + "/" + fd
+            # stat may freeze if it tries to follow a symlink to a
+            # network mount, so filter out files syntactically
+            # first
+            if os.readlink(path).startswith("/"):
                 continue
-            out.setdefault(s.st_ino, []).append(pid)
+            s = os.stat(path)
+        except OSError, e:
+            if e.errno == errno.ENOENT:
+                # This is okay.  The file was just closed
+                continue
+            raise
+        if not stat.S_ISSOCK(s.st_mode):
+            continue
+        out.add(s.st_ino)
+    return out
+
+def getAddrsOfPID(pid):
+    """Retrieve a set of IP addresses in use by the given PID.  Throws
+    LookupError if the process ID does not exist or cannot be accessed
+    by the current user."""
+
+    out = set()
+    i2a = getInodeToAddrMap()
+    inodes = getSockInodesOfPID(pid)
+    for inode in inodes:
+        try:
+            out.add(i2a[inode])
+        except LookupError:
+            pass
     return out
 
 ##################################################################
@@ -194,19 +263,16 @@ def getPIDName(pid):
             raise LookupError("No access to pid %d" % pid)
         raise
 
-def pidsof(name):
+def pidsOf(name):
     """Get the process ID's whose name equals the specified name."""
 
     out = set()
     for pid in pids():
-        f = "/proc/%d/exe" % pid
         try:
-            if os.path.basename(os.readlink(f)) != name:
+            if getPIDName(pid) != name:
                 continue
-        except OSError, e:
-            if e.errno == errno.ENOENT or e.errno == errno.EACCES:
-                continue
-            raise
+        except LookupError:
+            pass
         out.add(pid)
     return out
 
@@ -216,7 +282,7 @@ def getPPIDOf(pid):
     f = "/proc/%d/stat" % pid
     try:
         line = file(f, "r").readline()
-    except OSError, e:
+    except IOError, e:
         if e.errno == errno.ENOENT:
             raise LookupError("No such pid %d" % pid)
         elif e.errno == errno.EACCES:
@@ -225,117 +291,12 @@ def getPPIDOf(pid):
     line = line[line.find(")")+1:]
     return int(line.split()[1])
 
-##################################################################
-# Main
-#
-
-def main():
-    lastUpIPs = {}
-    lastIPs = {}
-
-    firstTime = True
-    while True:
-        if not firstTime:
-            time.sleep(POLL_INTERVAL)
-        else:
-            firstTime = False
-        nowIPs = getHostIPs()
-        if nowIPs == lastIPs:
-            # Common case.  No interface changes
-            continue
-        # Look for interfaces that went down
-        down = []
-        for iface, addr in lastIPs.items():
-            if iface not in nowIPs:
-                down.append(addr)
-        # Look for interfaces that came up
-        up = []
-        for iface, addr in nowIPs.items():
-            if iface not in lastIPs:
-                up.append(addr)
-        lastIPs = nowIPs
-        # Look for interfaces that changed since the last time they
-        # were up
-        changed = []
-        for iface, addr in nowIPs.items():
-            if iface in lastUpIPs and lastUpIPs[iface] != addr:
-                changed.append((lastUpIPs[iface], addr))
-            lastUpIPs[iface] = addr
-
-        if down or up or changed:
-            handle(down, up, changed)
-
-##################################################################
-# IP change handling
-#
-
-def handle(down, up, changed):
-    for d in down:
-        print >> sys.stderr, "%s went down" % d
-    for u in up:
-        print >> sys.stderr, "%s came up" % u
-    for c in changed:
-        print >> sys.stderr, "%s changed to %s" % c
-
-    if changed:
-        # Find processes still bound to the old IP
-        a2i = getAddrToInodeMap()
-        i2p = getSockInodeToPIDMap()
-        pids = set()
-        for (old, new) in changed:
-            inodes = a2i.get(old, [])
-            for inode in inodes:
-                pids.update(i2p.get(inode, []))
-        sshs = set()
-        pidgin = False
-        for pid in pids:
-            try:
-                name = getPIDName(pid)
-                print "Found %s (%d) using old IP" % (name, pid)
-            except LookupError:
-                continue
-            if name == "ssh":
-                sshs.add(pid)
-            elif name == "pidgin":
-                pidgin = True
-
-        if sshs:
-            # Restart autossh connections
-            autosshs = set()
-            for ssh in sshs:
-                try:
-                    ppid = getPPIDOf(ssh)
-                    if getPIDName(ppid) != "autossh":
-                        continue
-                    autosshs.add((ppid, ssh))
-                except LookupError:
-                    pass
-            for (autossh, ssh) in autosshs:
-                print "Reconnecting autossh %d (ssh %d)" % (autossh, ssh)
-                sshs.remove(ssh)
-                try:
-                    os.kill(autossh, signal.SIGUSR1)
-                except OSError:
-                    continue
-
-            # Kill remaining ssh sessions
-            killNicely("ssh", 1, sshs)
-
-        # Reconnect Pidgin
-        if pidgin:
-            print >> sys.stderr, "Reconnecting pidgin"
-            status = purpleGetStatus()
-            if not status:
-                print >> sys.stderr, "Failed to get status"
-            else:
-                purpleSetStatus("offline")
-                purpleSetStatus(status)
-
 def killNicely(procname, delay, pids):
     for pid in pids:
         print >> sys.stderr, "Terminating %s %d" % (procname, pid)
         try:
             os.kill(pid, signal.SIGTERM)
+            pass
         except OSError, e:
             if e.errno == errno.ESRCH:
                 continue
@@ -361,23 +322,259 @@ def killNicely(procname, delay, pids):
                 print >> sys.stderr, "Killing %s %d" % (procname, pid)
                 try:
                     os.kill(pid, signal.SIGKILL)
+                    pass
                 except OSError, e:
                     if e.errno == errno.ESRCH:
                         continue
                     raise
 
-def purpleGetStatus():
-    pr = os.popen("purple-remote getstatus")
-    status = pr.read().strip()
-    if pr.close():
-        return None
-    return status
+##################################################################
+# Main
+#
 
-def purpleSetStatus(status):
-    os.spawnlp(os.P_WAIT, "purple-remote", "purple-remote",
-               "setstatus?status=" + status)
+def main():
+    monitor = IPMonitor()
+    handlers = [SSHHandler(), AutosshHandler(), PidginHandler()]
+
+    while True:
+        down, anyUp, active = monitor.update()
+
+        # Handle changed IP's
+        cache.clear()
+        if down:
+            for h in handlers:
+                h.handleDown(down, active)
+        if anyUp:
+            for h in handlers:
+                h.handleUp(active)
+
+        time.sleep(POLL_INTERVAL)
+
+##################################################################
+# IP change monitoring
+#
+
+class IPMonitor(object):
+    def __init__(self):
+        _, self.__curIPs = self.__getIPs()
+        self.__pending = {}
+
+    def update(self):
+        allIPs, nowIPs = self.__getIPs()
+
+        # Which IP's of interest changed?
+        newlyDown = self.__curIPs - nowIPs
+        newlyUp = nowIPs - self.__curIPs
+
+        for ip in newlyDown:
+            print >> sys.stderr, "%s went down" % ip
+        for ip in newlyUp:
+            print >> sys.stderr, "%s came up" % ip
+
+        self.__curIPs = nowIPs
+
+        # Revive pending IP's that have come back up
+        up = set()
+        for ip in newlyUp:
+            if ip in self.__pending:
+                print "%s revived within grace period" % ip
+                del self.__pending[ip]
+            else:
+                up.add(ip)
+
+        now = time.time()
+        # If any IP has come up, expire all pending IP's.  This is
+        # necessary for things like switching from wireless to wired.
+        if up:
+            down = set(self.__pending.keys())
+            self.__pending.clear()
+            for ip in down:
+                print >> sys.stderr, "%s replaced" % ip
+        else:
+            # Find IP's whose grace period has expired
+            down = set()
+            for ip, end in self.__pending.iteritems():
+                if now >= end:
+                    down.add(ip)
+            for ip in down:
+                del self.__pending[ip]
+                print >> sys.stderr, "%s exceeded grace period" % ip
+
+        # Add newly down IP's to pending list
+        for ip in newlyDown:
+            self.__pending[ip] = now + GRACE_SECS
+
+        return (down, bool(up), allIPs.union(self.__pending.keys()))
+
+    def __getIPs(self):
+        """Retrieve the host's current IP's, returning a pair of the
+        set of all IP's and the set of IP's for which up and down
+        events should be considered."""
+
+        ipMap = getHostIPs()
+        filteredIPs = set()
+        allIPs = set(ipMap.items())
+        matcher = re.compile(INTERFACE_RE)
+        for iface, ip in ipMap.items():
+            if matcher.match(iface):
+                filteredIPs.add(ip)
+        return allIPs, filteredIPs
+
+##################################################################
+# IP change handling
+#
+
+class Handler(object):
+    def __init__(self):
+        pass
+
+    def handleDown(self, newlyDown, active):
+        pass
+
+    def handleUp(self, active):
+        pass
+
+class SSHHandler(Handler):
+    def __init__(self):
+        Handler.__init__(self)
+
+    def handleDown(self, newlyDown, active):
+        # Kill SSH's that are using a newly down IP
+        # XXX What about other things that will automatically
+        # reconnect, like sshfs?
+        self.__kill(lambda addrs: bool(addrs.intersection(newlyDown)))
+
+    def handleUp(self, active):
+        # Kill SSH's that are using a non-active IP
+        self.__kill(lambda addrs: bool(addrs - active))
+
+    def __kill(self, pred):
+        # Kill SSH's that satisfy pred.  pred is called with the set
+        # of IP's in use by each ssh
+        toKill = set()
+        for pid in pidsOf("ssh"):
+            if self.__immune(pid):
+                continue
+
+            try:
+                addrs = getAddrsOfPID(pid)
+            except LookupError:
+                continue
+            if pred(addrs):
+                toKill.add(pid)
+
+        killNicely("ssh", 1, toKill)
+
+    def __immune(self, pid):
+        # Don't kill SSH's that are running inside autossh
+        try:
+            ppid = getPPIDOf(pid)
+            if getPIDName(ppid) == "autossh":
+                return True
+        except LookupError:
+            pass
+        return False
+
+class AutosshHandler(Handler):
+    def __init__(self):
+        Handler.__init__(self)
+        self.__toRestart = {}
+
+    def handleDown(self, newlyDown, active):
+        # Find all autossh's that are using a newly down IP.  Don't
+        # signal them yet, because they'll just try to reconnect
+        for autossh, ssh in self.__autosshs():
+            try:
+                addrs = getAddrsOfPID(ssh)
+            except LookupError:
+                continue
+            if addrs.intersection(newlyDown):
+                print "Will reconnect autossh %d (ssh %d)" % (autossh, ssh)
+                self.__toRestart[autossh] = ssh
+
+    def handleUp(self, active):
+        # Add autossh's using non-active IP's to the restart list
+        for autossh, ssh in self.__autosshs():
+            try:
+                addrs = getAddrsOfPID(ssh)
+            except LookupError:
+                continue
+            if addrs - active:
+                self.__toRestart[autossh] = ssh
+        # Restart autossh's
+        for autossh, ssh in self.__toRestart.items():
+            print "Reconnecting autossh %d (ssh %d)" % (autossh, ssh)
+            try:
+                os.kill(autossh, signal.SIGUSR1)
+            except OSError:
+                continue
+
+    def __autosshs(self):
+        for pid in pidsOf("ssh"):
+            try:
+                ppid = getPPIDOf(pid)
+                if getPIDName(ppid) != "autossh":
+                    continue
+            except LookupError:
+                continue
+            yield (ppid, pid)
+
+class PidginHandler(Handler):
+    def __init__(self):
+        Handler.__init__(self)
+        self.__onlineStatus = "offline"
+
+    def handleDown(self, newlyDown, active):
+        # If Pidgin is using an IP that just went down, disconnect it
+        for pid in pidsOf("pidgin"):
+            try:
+                addrs = getAddrsOfPID(pid)
+            except LookupError:
+                continue
+            if newlyDown.intersection(addrs):
+                self.__disconnect()
+                break
+
+    def handleUp(self, active):
+        # Disconnect Pidgin if it is using a non-active IP
+        for pid in pidsOf("pidgin"):
+            try:
+                addrs = getAddrsOfPID(pid)
+            except LookupError:
+                continue
+            if addrs - active:
+                self.__disconnect()
+                break
+        # Reconnect if we disconnected Pidgin (either just now or when
+        # the IP went down)
+        if self.__onlineStatus != "offline":
+            print "Reconnecting Pidgin (%s)" % `self.__onlineStatus`
+            self.__purpleSetStatus(self.__onlineStatus)
+            self.__onlineStatus = "offline"
+
+    def __disconnect(self):
+        status = self.__purpleGetStatus()
+        if not status:
+            self.__onlineStatus = "offline"
+            return
+        print "Disconnecting Pidgin (was %s)" % `status`
+        if status != "offline":
+            self.__onlineStatus = status
+        self.__purpleSetStatus("offline")
+
+    @staticmethod
+    def __purpleGetStatus():
+        # XXX Do this over dbus
+        pr = os.popen("purple-remote getstatus")
+        status = pr.read().strip()
+        if pr.close():
+            return None
+        return status
+
+    @staticmethod
+    def __purpleSetStatus(status):
+        os.spawnlp(os.P_WAIT, "purple-remote", "purple-remote",
+                   "setstatus?status=" + status)
 
 if __name__ == "__main__":
-    # Simulate all current IP's changing
-    # ips = getHostIPs().values(); handle([], [], zip(ips, ips))
     main()
