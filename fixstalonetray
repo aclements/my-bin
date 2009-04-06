@@ -1,0 +1,6 @@
+#!/bin/zsh
+
+WID=`xdotool search --class stalonetray | head -n 1`
+WIDTH=`xwininfo -id $WID | awk '/Width:/ { print $2 }'`
+SCWIDTH=`xwininfo -root | awk '/Width:/ { print $2 }'`
+xdotool windowmove $WID $(( $SCWIDTH - $WIDTH )) 0
