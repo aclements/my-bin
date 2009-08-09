@@ -273,7 +273,7 @@ def pidsOf(name):
             if getPIDName(pid) != name:
                 continue
         except LookupError:
-            pass
+            continue
         out.add(pid)
     return out
 
@@ -384,6 +384,11 @@ class IPMonitor(object):
                 up.add(ip)
 
         now = time.time()
+
+        # Add newly down IP's to pending list
+        for ip in newlyDown:
+            self.__pending[ip] = now + GRACE_SECS
+
         # If any IP has come up, expire all pending IP's.  This is
         # necessary for things like switching from wireless to wired.
         if up:
@@ -401,10 +406,6 @@ class IPMonitor(object):
                 del self.__pending[ip]
                 print >> sys.stderr, "%s exceeded grace period" % ip
 
-        # Add newly down IP's to pending list
-        for ip in newlyDown:
-            self.__pending[ip] = now + GRACE_SECS
-
         return (down, bool(up), allIPs.union(self.__pending.keys()))
 
     def __getIPs(self):
@@ -414,7 +415,7 @@ class IPMonitor(object):
 
         ipMap = getHostIPs()
         filteredIPs = set()
-        allIPs = set(ipMap.items())
+        allIPs = set(ipMap.values())
         matcher = re.compile(INTERFACE_RE)
         for iface, ip in ipMap.items():
             if matcher.match(iface):
