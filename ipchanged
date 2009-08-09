@@ -16,8 +16,9 @@
 POLL_INTERVAL = 2.0
 
 # How long an IP can be down for before it's considered dead
-GRACE_SECS = 20
+#GRACE_SECS = 20
 #GRACE_SECS = 2
+GRACE_SECS = 0
 
 # A regular expression that should match the interface names for which
 # up/down events should be considered.  This is useful to filter out
