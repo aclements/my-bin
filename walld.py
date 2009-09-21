@@ -3,7 +3,7 @@
 # Whether or not to change the XFCE terminal background darkness
 XFCETERMINAL = True
 
-import sys, os, random, subprocess, re
+import sys, os, random, subprocess, re, shutil
 
 if len(sys.argv) not in (2, 3) or not os.path.isdir(sys.argv[-1]):
     print "Usage: walld.py [-d] <directory>"
@@ -55,7 +55,7 @@ def setXFCETerminalDarkness(val):
         print "failed to write %s.new:" % path, e
         return
     try:
-        os.rename(path, path + ".old")
+        shutil.copy2(path, path + ".old")
         os.rename(path + ".new", path)
     except OSError, e:
         print "failed to rename %s:" % path, e
