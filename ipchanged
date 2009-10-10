@@ -12,6 +12,9 @@
 #   (Note that this requires purple-remote, which can be found in the
 #   libpurple-bin package)
 
+# Pidgin 2.6 has built-in NetworkManager integration that actually
+# works, so it can disconnect and reconnect itself.
+
 # How frequently, in seconds, to poll for an IP change
 POLL_INTERVAL = 2.0
 
@@ -335,7 +338,7 @@ def killNicely(procname, delay, pids):
 
 def main():
     monitor = IPMonitor()
-    handlers = [SSHHandler(), AutosshHandler(), PidginHandler()]
+    handlers = [SSHHandler(), AutosshHandler()] #, PidginHandler()]
 
     while True:
         down, anyUp, active = monitor.update()
