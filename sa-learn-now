@@ -1,9 +1,20 @@
 #!/usr/bin/zsh
 
-setopt extended_glob
-
-SPAM=~/Mail/spam
-HAM=~/Mail/^(spam*|reuse|Trash|sent-mail|postponed|virusin)(.)
+SPAM=()
+HAM=()
+for d in $(find ~/Maildir \( -name cur -o -name new -o -name tmp \) -prune -o \( -type d -print \) | sort); do
+    if [[ ! -d $d/cur || ! -d $d/new || ! -d $d/tmp ]]; then
+        continue
+    fi
+    case `basename $d` in
+        spam)
+            SPAM=($SPAM $d/cur $d/new);;
+        INBOX|spam*|virus*|reuse|Trash|Sent|Drafts)
+            ;;
+        *)
+            HAM=($HAM $d/cur $d/new);;
+    esac
+done
 
 EXTRA=
 if [[ -t 1 ]]; then
@@ -11,11 +22,22 @@ if [[ -t 1 ]]; then
     EXTRA="--progress"
 fi
 
-echo "Scanning spam"
-sa-learn $EXTRA --mbox --spam ${~SPAM}
+echo "[$(date)] Scanning spam"
+sa-learn $EXTRA --spam $SPAM
 
-echo "Scanning ham"
-sa-learn $EXTRA --mbox --ham ${~HAM}
+echo "[$(date)] Scanning ham"
+sa-learn $EXTRA --ham $HAM
 
-echo "Cleaning up spam"
-sys/bin/splitspam
+COUNT=$(ls -1 $SPAM | wc -l)
+if (( $COUNT >= 5000 )); then
+    SPAMDIR=~/Maildir/spam
+    OUTNUM=1
+    while [[ -f $SPAMDIR.$OUTNUM ]]; do
+        OUTNUM=$(( OUTNUM + 1 ))
+    done
+    echo "[$(date)] Moving $COUNT spam to $SPAMDIR.$OUTNUM"
+    echo mv -T $SPAMDIR $SPAMDIR.$OUTNUM
+    echo mu-mkmdir $SPAMDIR
+fi
+
+echo "[$(date)] Done"
