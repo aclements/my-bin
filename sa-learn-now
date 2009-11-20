@@ -36,8 +36,9 @@ if (( $COUNT >= 5000 )); then
         OUTNUM=$(( OUTNUM + 1 ))
     done
     echo "[$(date)] Moving $COUNT spam to $SPAMDIR.$OUTNUM"
-    echo mv -T $SPAMDIR $SPAMDIR.$OUTNUM
-    echo mu-mkmdir $SPAMDIR
+    mv -T $SPAMDIR $SPAMDIR.$OUTNUM
+    mu-mkmdir $SPAMDIR
+    touch $SPAMDIR/.nobackup
 fi
 
 echo "[$(date)] Done"
