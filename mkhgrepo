@@ -1,0 +1,31 @@
+#!/bin/zsh
+
+set -e
+
+if [[ $# != 1 ]]; then
+    echo "Usage: $0 path" >&2
+    exit 2
+fi
+
+cd /z/hg
+if [[ -e $1 ]]; then
+    echo "$1 exists" >&2
+    exit 1
+fi
+
+sudo sudo -u www-data mkdir -p $1
+for u in www-data $USER; do
+    sudo sudo -u www-data setfacl -m user:${u}:rwx,d:user:${u}:rwx $1
+done
+sudo sudo -u www-data hg init $1
+(
+    echo "[web]"
+    echo "allow_push = $USER"
+) >> $1/.hg/hgrc
+
+echo "Repository created."
+echo "https://awk/hg/$1"
+echo "  HTTP pull allowed for:  ALL"
+echo "  HTTP push allowed for:  $USER"
+echo "ssh://awk//z/hg/$1"
+echo "  SSH access allowed for: $USER"
