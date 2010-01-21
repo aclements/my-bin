@@ -1,5 +1,7 @@
 #!/usr/bin/python
 
+# (progn (setq server-name "/tmp/tasks-server") (server-start))
+
 import sys, os, re
 import datetime
 import textwrap
@@ -108,7 +110,7 @@ def talkToTasks(serverSocket = "/tmp/tasks-server"):
     print >> fout, date.strftime("%A, %B %e, %Y")
     print >> fout, textwrap.fill(title,
                                  initial_indent    = " - %s [Talk] " % time,
-                                 subsequent_indent = "    ")
+                                 subsequent_indent = "   ")
     print >> fout, "     Location: %s" % loc
     fout.flush()
 
@@ -117,7 +119,8 @@ def talkToTasks(serverSocket = "/tmp/tasks-server"):
          "-e", "(tasks-insert-from-file \"%s\")" % fout.name],
         stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
     out = ec.stdout.read()
-    if ec.wait() != 0:
+    res = ec.wait()
+    if res != 0:
         raise RuntimeError("emacsclient failed with exit code %d" % res)
     if out.startswith("error: "):
         raise RuntimeError("Failed to insert task: %s" % out[7:].strip())
