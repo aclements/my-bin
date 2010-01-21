@@ -1,0 +1,88 @@
+#!/usr/bin/python
+
+import sys, os, time
+from urllib2 import urlopen
+import xml.dom.minidom as minidom
+import subprocess
+
+DEST = os.path.expanduser("~/music/Organized/Trance/Trance Around the World")
+
+ISATTY = sys.stdout.isatty()
+
+PODCAST_CACHE_SECS = 24*60*60 - 30*60
+
+def getTracks():
+    xmlPath = "/tmp/podcast.xml"
+    if (not os.path.exists(xmlPath) or
+        time.time() - os.path.getmtime(xmlPath) > PODCAST_CACHE_SECS):
+        if ISATTY:
+            print "Retrieving podcast...",
+        rssf = urlopen("http://www.tatw.co.uk/podcast.xml")
+        data = rssf.read()
+        rssf.close()
+        file(xmlPath, "w").write(data)
+        rss = minidom.parseString(data)
+    else:
+        if ISATTY:
+            print "Using cached podcast...",
+        rss = minidom.parse(xmlPath)
+
+    tracks = {}
+    for item in rss.getElementsByTagName("item"):
+        title = item.getElementsByTagName("title")[0].firstChild.data
+        if not title.startswith("#"):
+            continue
+        name = title.split()[0][1:]
+        enc = item.getElementsByTagName("enclosure")[0].getAttribute("url")
+        if ISATTY:
+            print name,
+        tracks[name] = enc
+    if ISATTY:
+        print
+    return tracks
+
+def getTrack(tracks, name):
+    url = tracks[name]
+    path = os.path.join(DEST, name + ".mp3")
+    if os.path.exists(path):
+        return path, False
+    f = urlopen(url)
+    data = []
+    size = 0
+    if not ISATTY:
+        print "Retrieving %s..." % url,
+    while True:
+        if ISATTY:
+            print "\rRetrieving %s... %d KB" % (url, size / 1024),
+        data1 = f.read(10 * 1024)
+        size += len(data1)
+        data.append(data1)
+        if not len(data1):
+            break
+    if ISATTY:
+        print
+    else:
+        print "%d KB" % (size / 1024)
+    out = file(path, "w")
+    out.write("".join(data))
+    out.close()
+    return path, True
+
+def patchTrack(path, name):
+    print "Patching %s..." % path
+    subprocess.check_call(["id3v2", "-a", "Above & Beyond",
+                           "-A", "Trance Around the World",
+                           "-t", "#" + name,
+                           "-T", name,
+                           "-g", "31",
+                           path])
+
+if __name__ == "__main__":
+    tracks = getTracks()
+    for name in sorted(tracks.keys()):
+        if name.isdigit() and int(name) < 261:
+            continue
+        path, fresh = getTrack(tracks, name)
+        if fresh:
+            patchTrack(path, name)
+            break
