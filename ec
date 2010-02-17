@@ -17,8 +17,8 @@ fi
 typeset -A args
 
 for arg in $*; do
-    fname=$(echo $arg | sed -re 's/(.*):([0-9]+):?/\1/')
-    lnum=$(echo $arg | sed -re 's/(.*):([0-9]+):?/+\2/')
+    fname=$(echo $arg | sed -re 's/(.*):([0-9]+)(:.*)?/\1/')
+    lnum=$(echo $arg | sed -re 's/(.*):([0-9]+)(:.*)?/+\2/')
     if [[ $fname == $lnum ]]; then
         lnum=
     fi
