@@ -1,0 +1,123 @@
+#!/usr/bin/python
+
+import os, sys
+import getopt
+from socket import gethostname
+from pipes import quote
+
+# XXX The way we use this map is asymmetric.  Locally, we use the
+# result of hostname.  Remotely, we use the hostname string passed to
+# ssh (which could even be mapped to something else by ssh_config).
+# We could instead pass a snippet of shell to the remote machine with
+# all possible target directories and have the remote machine decide
+# which directory to switch to.
+MAP = [{"drake":"/home/amthrax/ssh/tom",
+        "tom":"/"},
+       {"drake":"/home/amthrax/ssh/josmp",
+        "josmp":"/"},
+       ]
+
+# The getopt specification for ssh's command line arguments.
+# Unfortunately, we need to be able to parse these to reliably extract
+# the target hostname and command.
+SSH_ARGS = "1246ab:c:e:fgi:kl:m:no:p:qstvxACD:F:I:KL:MNO:PR:S:TVw:XYy"
+
+def parseArgs():
+    # Parse ssh arguments
+    try:
+        opts, args = getopt.gnu_getopt(sys.argv[1:], SSH_ARGS)
+    except getopt.GetoptError, err:
+        if err.opt:
+            # Get ssh to print its error message.  We strip all of the
+            # other arguments to ensure this will be an invalid
+            # command-line, even if ssh now supports some argument we
+            # don't know about.
+            os.execlp("ssh", "ssh", "-" + err.opt)
+        else:
+            # I believe there are no cases where no option is implicated
+            # in the exception, but the docs say it's possible.
+            raise
+    if len(args) == 0:
+        # Again, get ssh to print the error
+        os.execlp("ssh", "ssh")
+    login = args[0]
+    # The ssh client simply concatenates all of the command arguments
+    # it gets.
+    command = " ".join(args[1:])
+    return opts, login, command
+
+def hostnameFromLogin(login):
+    if "@" in login:
+        # ssh splits at the right-most @.
+        return login.rsplit("@", 1)[1]
+    return login
+
+def asDir(path):
+    path = os.path.normpath(path)
+    if not path.endswith("/"):
+        path += "/"
+    return path
+
+def mapDir(localDir, localHost, remoteHost):
+    # Find the mappings that apply to this pair of hosts
+    maps = []
+    for mapping in MAP:
+        if localHost in mapping and remoteHost in mapping:
+            maps.append((asDir(mapping[localHost]), asDir(mapping[remoteHost])))
+    # Sort the mappings so we'll match the longest prefix first
+    maps.sort(key = lambda (l, r): len(l), reverse=True)
+    # Find the most specific applicable mapping
+    localDir = asDir(localDir)
+    for (l, r) in maps:
+        if localDir.startswith(l):
+            return os.path.join(r, localDir[len(l):])
+    # Failed
+    print >> sys.stderr, "Could not map %s on %s to %s" % \
+        (localDir, localHost, remoteHost)
+    sys.exit(1)
+
+def cdCmd(target, command):
+    if not len(command):
+        # XXX This doesn't run things quite the same way, since I
+        # don't get the motd and stuff.  It appears the ssh does this
+        # itself and check_quietlogin suppresses the motd either if a
+        # command was given or if .hushlogin exists.  Otherwise, it
+        # runs display_loginmsg and do_motd.
+
+        # When given no command, ssh'd do_child simply exec's the
+        # user's shell as a login shell with no arguments.
+        command = 'exec -l $0'
+        # Normally, ssh defaults to allocating a TTY when given no
+        # command.  Since we're now giving it a command, we have to
+        # force TTY allocation.  Conveniently, if the user explicitly
+        # passed -T, it'll override this extra argument (regardless of
+        # order).
+        extraOpts = [('-t', '')]
+    else:
+        # When given a command, ssh's do_child runs the command by
+        # exec'ing the user's shell with -c and the command.  The
+        # passed command needs to be a single argument, so we quote it
+        # here.
+        command = 'exec $SHELL -c ' + quote(command)
+        extraOpts = []
+    return extraOpts, 'cd ' + quote(target) + ' && ' + command
+
+def invoke(opts, login, command):
+    # Re-construct ssh arguments
+    sshargs = []
+    for opt, val in opts:
+        sshargs.append(opt)
+        if val:
+            sshargs.append(val)
+    sshargs.append(login)
+    # Make sure the command is treated as a command
+    sshargs.append("--")
+    sshargs.append(command)
+
+    # Run ssh
+    os.execlp("ssh", "ssh", *sshargs)
+
+opts, login, command = parseArgs()
+target = mapDir(os.getcwd(), gethostname(), hostnameFromLogin(login))
+extraOpts, realCommand = cdCmd(target, command)
+invoke(opts + extraOpts, login, realCommand)
