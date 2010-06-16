@@ -74,7 +74,11 @@ if [[ -n $AGENTENV ]] && ! is_agent_running; then
         source $AGENTENV &> /dev/null
     fi
     if is_agent_running; then
-        echo "Attached to existing agent $SSH_AGENT_PID" > /dev/stderr
+        # Don't print this from a shell script.  It tends to screw
+        # things up and makes cron jobs noisy.
+        if [[ -t 1 ]]; then
+            echo "Attached to existing agent $SSH_AGENT_PID" > /dev/stderr
+        fi
     else
         # Stale agent environment
         rm -f $AGENTENV
