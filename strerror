@@ -3,7 +3,7 @@
 import sys, os, errno
 
 def usage():
-    print >> sys.stderr, "Usage: %s errno" % sys.argv[0]
+    print >> sys.stderr, "Usage: %s errno.." % sys.argv[0]
     sys.exit(2)
 
 if len(sys.argv) < 2:
@@ -16,7 +16,7 @@ for num, name in errno.errorcode.iteritems():
 ns = []
 for arg in sys.argv[1:]:
     try:
-        n = int(sys.argv[1])
+        n = int(arg)
     except:
         try:
             n = nametonum[arg.upper().strip()]
