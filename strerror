@@ -1,0 +1,29 @@
+#!/usr/bin/python
+
+import sys, os, errno
+
+def usage():
+    print >> sys.stderr, "Usage: %s errno" % sys.argv[0]
+    sys.exit(2)
+
+if len(sys.argv) < 2:
+    usage()
+
+nametonum = {}
+for num, name in errno.errorcode.iteritems():
+    nametonum[name] = num
+
+ns = []
+for arg in sys.argv[1:]:
+    try:
+        n = int(sys.argv[1])
+    except:
+        try:
+            n = nametonum[arg.upper().strip()]
+        except:
+            print >> sys.stderr, "Unknown argument %r" % arg
+            usage()
+    ns.append(n)
+
+for n in ns:
+    print "%-4d %-15s %s" % (n, errno.errorcode.get(n, "UNKNOWN"), os.strerror(n))
