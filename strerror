@@ -3,7 +3,7 @@
 import sys, os, errno
 
 def usage():
-    print >> sys.stderr, "Usage: %s errno.." % sys.argv[0]
+    print >> sys.stderr, "Usage: %s errno-or-name.." % sys.argv[0]
     sys.exit(2)
 
 if len(sys.argv) < 2:
