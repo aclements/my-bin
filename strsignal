@@ -1,0 +1,37 @@
+#!/usr/bin/python
+
+import sys, os, signal
+
+def usage():
+    print >> sys.stderr, "Usage: %s signo-or-name.." % sys.argv[0]
+    sys.exit(2)
+
+if len(sys.argv) < 2:
+    usage()
+
+nametonum = {}
+numtoname = {}
+for name, num in signal.__dict__.iteritems():
+    if name.startswith("SIG"):
+        nametonum[name] = num
+        numtoname[num] = name
+
+ns = []
+for arg in sys.argv[1:]:
+    try:
+        n = int(arg)
+    except:
+        try:
+            n = nametonum[arg.upper().strip()]
+        except:
+            try:
+                n = nametonum["SIG" + arg.upper().strip()]
+            except:
+                print >> sys.stderr, "Unknown argument %r" % arg
+                usage()
+    ns.append(n)
+
+for n in ns:
+    # Unfortunately, Python doesn't provide strsignal, so we can't get
+    # a description.
+    print "%-4d %-15s" % (n, numtoname.get(n, "UNKNOWN"))
