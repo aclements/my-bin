@@ -116,14 +116,16 @@ def talkToTasks(serverSocket = "/tmp/tasks-server"):
 
     ec = subprocess.Popen(
         ["emacsclient", "-s", serverSocket,
-         "-e", "(tasks-insert-from-file \"%s\")" % fout.name],
-        stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
+         "-e", "(with-current-buffer \"tasks\" (tasks-insert-from-file \"%s\"))" % fout.name],
+        stdout = subprocess.PIPE, stderr = subprocess.PIPE)
     out = ec.stdout.read()
+    err = ec.stderr.read()
     res = ec.wait()
     if res != 0:
         raise RuntimeError("emacsclient failed with exit code %d" % res)
-    if out.startswith("error: "):
-        raise RuntimeError("Failed to insert task: %s" % out[7:].strip())
+    if out.strip() + err.strip():
+        raise RuntimeError("Failed to insert task: %s" %
+                           (out.strip() + err.strip()))
 
     fout.close()
 
