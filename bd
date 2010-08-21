@@ -1,0 +1,19 @@
+#!/usr/bin/python
+
+import sys
+
+i = 0
+while True:
+    b = sys.stdin.read(1)
+    if not len(b):
+        break
+    if i % 8 == 0:
+        if i:
+            print
+        print "%04x " % i,
+    if i % 8 == 4:
+        print "",
+    print bin(ord(b))[2:].zfill(8),
+    i += 1
+print
+
