@@ -1,23 +1,86 @@
-#!/bin/zsh
+#!/usr/bin/python
 
-if [[ -n $* ]]; then
-    ARGS=-uw
-fi
+import sys, os, subprocess
 
-if whence colordiff &> /dev/null; then
-    CMD=colordiff
-elif [[ -x ~/bin/extra/colordiff ]]; then
-    CMD=~/bin/extra/colordiff
-else
-    if [[ -z $* ]]; then
-        CMD=cat
-    else
-        CMD=diff
-    fi
-fi
+codes = {"default" : "0", "bold" : "1"}
+for i, name in enumerate(["black", "red", "green", "yellow",
+                          "blue", "magenta", "cyan", "white"]):
+    codes[name] = "3%d" % i
+    codes[name + "_background"] = "4%d" % i
 
-if [[ $CMD == *colordiff && ! -f ~/.colordiffrc ]]; then
-    echo "banner=no" > ~/.colordiffrc
-fi
+def parseColor(spec):
+    out = []
+    for part in spec.split():
+        if part not in codes:
+            raise ValueError("Unknown color spec %r" % part)
+        out.append(codes[part])
+    return "\x1b[%sm" % ";".join(out)
 
-exec $CMD $ARGS $*
+ADD = parseColor("bold green")
+REMOVE = parseColor("bold red")
+HUNK = parseColor("bold magenta")
+FILE = parseColor("bold yellow")
+
+def colorize():
+    default = parseColor("default")
+    while 1:
+        l = sys.stdin.readline()
+        if not l:
+            break
+        if l.startswith("+"):
+            color = ADD
+        elif l.startswith("-"):
+            color = REMOVE
+        elif l.startswith("@"):
+            color = HUNK
+        elif l.startswith("diff") or l.startswith("Index: ") or l.startswith("======"):
+            color = FILE
+        else:
+            color = None
+        try:
+            if color != None:
+                sys.stdout.write(color)
+            sys.stdout.write(l)
+            if color != None:
+                sys.stdout.write(default)
+        except IOError:
+            # less must have gone away
+            sys.exit(1)
+    try:
+        sys.stdout.flush()
+    except IOError:
+        sys.exit(1)
+
+if len(sys.argv) > 1:
+    pin = subprocess.Popen(["diff", "-u"] + sys.argv[1:], stdout = subprocess.PIPE)
+    sys.stdin = pin.stdout
+else:
+    pin = None
+
+if os.isatty(1):
+    # The -X is important in conjunction with -F on terminals where
+    # 'te' clears the screen.
+    pout = subprocess.Popen(["less", "-FXR"], stdin = subprocess.PIPE)
+    sys.stdout = pout.stdin
+else:
+    pout = None
+
+colorize()
+
+# Clean up diff process
+if pin == None:
+    status = 0
+else:
+    status = pin.wait()
+    # 0 and 1 are standard for diff.  Exit on other codes.
+    if status > 1:
+        sys.exit(status)
+    elif status < 0:
+        os.kill(os.getpid(), -status)
+
+# Wait for less process to finish (else we'll trash the terminal)
+if pout != None:
+    pout.stdin.close()
+    pout.wait()
+
+sys.exit(status)
