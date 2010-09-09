@@ -51,6 +51,12 @@ def colorize():
     except IOError:
         sys.exit(1)
 
+def usage():
+    print >> sys.stderr, "Usage: %s [diff args]" % sys.argv[0]
+    print >> sys.stderr
+    print >> sys.stderr, "Colorized diff.  Can be called like diff, or used as a filter."
+    sys.exit(2)
+
 if len(sys.argv) > 1:
     pin = subprocess.Popen(["diff", "-u"] + sys.argv[1:], stdout = subprocess.PIPE)
     sys.stdin = pin.stdout
@@ -58,6 +64,13 @@ else:
     pin = None
 
 if os.isatty(1):
+    if pin == None and os.isatty(0):
+        # We'll fight with less over stdin.  Not a good idea.
+        # However, this is the path we'll take when invoked with no
+        # arguments from the command line, so it's a perfect place for
+        # usage info.
+        usage()
+
     # The -X is important in conjunction with -F on terminals where
     # 'te' clears the screen.
     pout = subprocess.Popen(["less", "-FXR"], stdin = subprocess.PIPE)
