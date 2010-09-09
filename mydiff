@@ -19,7 +19,7 @@ def parseColor(spec):
 ADD = parseColor("bold green")
 REMOVE = parseColor("bold red")
 HUNK = parseColor("bold magenta")
-FILE = parseColor("bold yellow")
+HEADER = parseColor("bold yellow")
 
 def colorize():
     default = parseColor("default")
@@ -33,8 +33,14 @@ def colorize():
             color = REMOVE
         elif l.startswith("@"):
             color = HUNK
-        elif l.startswith("diff") or l.startswith("Index: ") or l.startswith("======"):
-            color = FILE
+        elif (
+            # Diff
+            l.startswith("diff") or
+            # SVN
+            l.startswith("Index: ") or l.startswith("======") or
+            # git
+            l.startswith("index ")):
+            color = HEADER
         else:
             color = None
         try:
