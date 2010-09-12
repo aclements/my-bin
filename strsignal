@@ -12,7 +12,7 @@ if len(sys.argv) < 2:
 nametonum = {}
 numtoname = {}
 for name, num in signal.__dict__.iteritems():
-    if name.startswith("SIG"):
+    if name.startswith("SIG") and not name.startswith("SIG_"):
         nametonum[name] = num
         numtoname[num] = name
 
