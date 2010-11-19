@@ -29,6 +29,10 @@ MAP = [{"drake":"/home/amthrax/ssh/tom",
         "tom":"/"},
        {"drake":"/home/amthrax/ssh/josmp",
         "josmp":"/"},
+       {"drake":"/home/amthrax/ssh/awk",
+        "awakening":"/"},
+       {"drake":"/home/amthrax/ssh/am.lcs",
+        "amsterdam.lcs.mit.edu":"/"}
        ]
 
 # The getopt specification for ssh's command line arguments.
@@ -100,9 +104,12 @@ def cdCmd(targets, command):
         # command was given or if .hushlogin exists.  Otherwise, it
         # runs display_loginmsg and do_motd.
 
-        # When given no command, ssh'd do_child simply exec's the
-        # user's shell as a login shell with no arguments.
-        execPart = 'exec -l $0'
+        # When given no command, ssh's do_child simply exec's the
+        # user's shell as a login shell with no arguments.  I would
+        # love to just 'exec -l $0', but that requires the user's
+        # login shell to know exec -l, so instead we exec bash and use
+        # that to exec -l.
+        execPart = 'exec bash -c exec\\ -l\\ $0'
         # Normally, ssh defaults to allocating a TTY when given no
         # command.  Since we're now giving it a command, we have to
         # force TTY allocation.  Conveniently, if the user explicitly
