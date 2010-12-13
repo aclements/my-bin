@@ -1,0 +1,44 @@
+#!/usr/bin/python
+
+import sys, os, hashlib
+
+# XXX For large files, just record their size first and only bother
+# reading them if there are multiple files with the same size (we
+# could even do an intermediate pass using only the beginning of the
+# file).
+
+hashes = {}
+
+total = 0
+duplicates = 0
+
+for root in sys.argv[1:]:
+    for (dirpath, dirnames, filenames) in os.walk(root):
+        for f in filenames:
+            fp = open(os.path.join(dirpath, f))
+            h = hashlib.sha1()
+            while True:
+                data = fp.read(1024*1024)
+                if not data:
+                    break
+                h.update(data)
+            fp.close()
+
+            digest = h.digest()
+            entry = (dirpath, f)
+            value = hashes.setdefault(digest, entry)
+            if value is not entry:
+                if not isinstance(value, list):
+                    # Promote to duplicate
+                    value = [value]
+                    hashes[digest] = value
+                    duplicates += 1
+                value.append(entry)
+
+            total += 1
+            sys.stderr.write("\r%d examined, %d duplicate(s)" % (total, duplicates))
+print >> sys.stderr
+
+for v in hashes.itervalues():
+    if not isinstance(v, list): continue
+    print " ".join(os.path.join(d, f) for (d, f) in v)
