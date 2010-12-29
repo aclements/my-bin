@@ -1,0 +1,43 @@
+#!/usr/bin/python
+
+import os
+from optparse import OptionParser
+import BaseHTTPServer
+from CGIHTTPServer import CGIHTTPRequestHandler
+from SocketServer import ThreadingMixIn
+
+class MyReqHandler(CGIHTTPRequestHandler):
+    def is_cgi(self):
+        if options.cgi and self.path.endswith(".cgi"):
+            slash = self.path.find("/")
+            self.cgi_info = self.path[:slash], self.path[slash+1:]
+            return True
+        return False
+
+class MyHTTPServer(ThreadingMixIn, BaseHTTPServer.HTTPServer): pass
+
+def main():
+    global options
+
+    parser = OptionParser()
+    parser.add_option("-p", "--port", action = "store", dest = "port",
+                      type = "int", default = 8000, help = "HTTP port")
+    parser.add_option("-a", "--any", action = "store_true", dest = "any",
+                      default = False, help = "Allow connections from any IP")
+    parser.add_option("-c", "--cgi", action = "store_true", dest = "cgi",
+                      default = False, help = "Execute .cgi files")
+    (options, args) = parser.parse_args()
+    if len(args) == 0:
+        pass
+    elif len(args) == 1:
+        os.chdir(args[0])
+    else:
+        parser.error("Too many directories specified")
+
+    print "Serving %s on port %d to %s" % \
+        (os.getcwd(), options.port, "any IP" if options.any else "localhost")
+    bind = ("" if options.any else "localhost", options.port)
+    MyHTTPServer(bind, MyReqHandler).serve_forever()
+
+if __name__ == "__main__":
+    main()
