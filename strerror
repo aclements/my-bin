@@ -16,7 +16,7 @@ for num, name in errno.errorcode.iteritems():
 ns = []
 for arg in sys.argv[1:]:
     try:
-        n = int(arg)
+        n = abs(int(arg))
     except:
         try:
             n = nametonum[arg.upper().strip()]
