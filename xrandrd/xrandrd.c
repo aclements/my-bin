@@ -1,13 +1,12 @@
 // Run "xauto" to reconfigure xrandr whenever the physical screen
-// configuration changes.  Inspired by
-//   http://unix.stackexchange.com/questions/4489/a-tool-for-automatically-applying-randr-configuration-when-external-display-is-pl
+// configuration changes.
 
-// See also http://www.spinics.net/lists/dri-devel/msg04479.html,
-// which generates Xrandr RROutputChangeNotify (I think) events on
-// monitor hotplug.  xf86-video-intel 2.13.0 probably has this.
+// Recent xf86-video-intel drivers (2.13.0+) generate the necessary
+// Xrandr events on monitor hot plug.  See
+// http://www.spinics.net/lists/dri-devel/msg04479.html,
 
+// See also http://git.gnome.org/browse/gnome-settings-daemon/tree/plugins/xrandr/gsd-xrandr-manager.c
 
-#include <libudev.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,9 +72,25 @@ freeRandrResources(struct randrResources *r)
         free(r);
 }
 
+void
+handleChange(void)
+{
+        static struct randrResources *prev = NULL;
+        struct randrResources *now = getRandrResources();
+        if (!prev || !randrResourcesEqual(prev, now)) {
+                printf("Resources differ\n");
+                system("xauto");
+        } else
+                printf("Resources do not differ\n");
+        if (prev)
+                freeRandrResources(prev);
+        prev = now;
+}
+
 int
 main(int argc, char **argv)
 {
+        int rrEvent, rrError;
         int r;
 
         // Open the X display and check for Xrandr
@@ -94,42 +109,29 @@ main(int argc, char **argv)
                 fprintf(stderr, "Requires RandR >= 1.2\n");
                 exit(1);
         }
-        struct randrResources *prev = NULL;
 
-        // Create a udev monitor
-        struct udev *udev;
-        struct udev_monitor *mon;
-        if (!(udev = udev_new()) ||
-            !(mon = udev_monitor_new_from_netlink(udev, "udev")) ||
-            udev_monitor_filter_add_match_subsystem_devtype(mon, "drm", NULL) ||
-            udev_monitor_enable_receiving(mon)) {
-                fprintf(stderr, "Failed to create udev event monitor\n");
+        // Get Xrandr event base
+        if (!XRRQueryExtension(dpy, &rrEvent, &rrError)) {
+                fprintf(stderr, "Failed to query RandR extension\n");
                 exit(1);
         }
 
-        // Respond to udev events
-        while (1) {
-                struct randrResources *now = getRandrResources();
-                if (!prev || !randrResourcesEqual(prev, now)) {
-                        printf("Resources differ\n");
-                        system("xauto");
-                } else
-                        printf("Resources do not differ\n");
-                if (prev)
-                        freeRandrResources(prev);
-                prev = now;
+        // Assume things are initially configured incorrectly
+        handleChange();
 
-                struct udev_device *dev = udev_monitor_receive_device(mon);
-                if (!dev) {
-                        fprintf(stderr, "Failed to receive udev event\n");
-                        exit(1);
+        // Monitor xrandr events on the root window
+        XRRSelectInput(dpy, root, RROutputChangeNotifyMask);
+
+        // Handle events
+        while (1) {
+                XEvent ev;
+                XNextEvent(dpy, &ev);
+                if (ev.type == rrEvent + RRNotify_OutputChange) {
+                        handleChange();
+                } else {
+                        printf("Unexpected X event: %d\n", ev.type);
                 }
-                printf("%s\n", udev_device_get_syspath(dev));
-                udev_device_unref(dev);
         }
 
-        // Clean up
-        udev_monitor_unref(mon);
-        udev_unref(udev);
         XCloseDisplay(dpy);
 }
