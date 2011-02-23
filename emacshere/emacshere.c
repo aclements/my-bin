@@ -69,7 +69,9 @@ xcb_spawn(void (*func)(void *), void *arg)
                            xcb_spawn_trampoline, NULL, NULL))
                 panic("pth_uctx_make failed");
 
-        // Execute the child up to its first wait (or exit).  First,
+        // Execute the child up to its first wait (or exit).  This is
+        // good for efficiency, but also important to make the
+        // children send their initial requests in order.  First,
         // schedule a little ring of just this task and the child.
         struct xcb_task *prev = xcb_task_cur->prev,
                 *next = xcb_task_cur->next;
@@ -296,14 +298,23 @@ void
 do_dnd(xcb_window_t target)
 {
         xcb_window_t source = xcb_generate_id(conn);
-        xcb_atom_t XdndAware, XdndSelection;
         xcb_void_cookie_t v;
 
-        // XXX Lift them all
+        xcb_atom_t XdndAware, XdndSelection,
+                XdndEnter, XdndPosition, XdndStatus, XdndDrop, XdndFinished,
+                textUriList, XdndActionCopy;
         XCB_ASYNC {XdndAware = ATOM("XdndAware");}
         XCB_ASYNC {XdndSelection = ATOM("XdndSelection");}
-        // XXX This sucks
-        while (xcb_task_main.next != &xcb_task_main) xcb_wait();
+        XCB_ASYNC {XdndEnter = ATOM("XdndEnter");}
+        XCB_ASYNC {XdndPosition = ATOM("XdndPosition");}
+        XCB_ASYNC {XdndStatus = ATOM("XdndStatus");}
+        XCB_ASYNC {XdndDrop = ATOM("XdndDrop");}
+        XCB_ASYNC {XdndFinished = ATOM("XdndFinished");}
+        XCB_ASYNC {textUriList = ATOM("text/uri-list");}
+        XCB_ASYNC {XdndActionCopy = ATOM("XdndActionCopy");}
+        // The following requires knowing that all of the above do at
+        // most one xcb_wait, as do the other synchronizing xcb_wait's.
+        xcb_wait();
 
         // Check for XDND target support
         int version = atom_property(target, XdndAware);
@@ -328,7 +339,7 @@ do_dnd(xcb_window_t target)
                          XCB_CURRENT_TIME);
                 xcb_wait_and_check(v, "setting selection owner");
         }
-        while (xcb_task_main.next != &xcb_task_main) xcb_wait();
+        xcb_wait();
 
         // Send enter event
         XCB_ASYNC {
@@ -336,11 +347,11 @@ do_dnd(xcb_window_t target)
                 memset(&msg, 0, sizeof msg);
                 msg.response_type = XCB_CLIENT_MESSAGE;
                 msg.window = target;
-                msg.type = ATOM("XdndEnter");
+                msg.type = XdndEnter;
                 msg.format = 32;
                 msg.data.data32[0] = source;
                 msg.data.data32[1] = version << 24;
-                msg.data.data32[2] = ATOM("text/uri-list");
+                msg.data.data32[2] = textUriList;
                 v = xcb_send_event_checked(conn, 0, target, 0, (char*)&msg);
                 xcb_wait_and_check(v, "Sending XdndEnter event");
         }
@@ -350,18 +361,18 @@ do_dnd(xcb_window_t target)
                 memset(&msg, 0, sizeof msg);
                 msg.response_type = XCB_CLIENT_MESSAGE;
                 msg.window = target;
-                msg.type = ATOM("XdndPosition");
+                msg.type = XdndPosition;
                 msg.format = 32;
                 msg.data.data32[0] = source;
                 msg.data.data32[1] = 0;
                 // Emacs blows up if you send position (0,0)
                 msg.data.data32[2] = (1 << 16) | 1;
                 msg.data.data32[3] = XCB_CURRENT_TIME;
-                msg.data.data32[4] = ATOM("XdndActionCopy");
+                msg.data.data32[4] = XdndActionCopy;
                 v = xcb_send_event_checked(conn, 0, target, 0, (char*)&msg);
                 xcb_wait_and_check(v, "Sending XdndPosition event");
         }
-        while (xcb_task_main.next != &xcb_task_main) xcb_wait();
+        xcb_wait();
 
         // Event loop
         while (1) {
@@ -374,7 +385,7 @@ do_dnd(xcb_window_t target)
                 int typ = ev->response_type & XCB_EVENT_RESPONSE_TYPE_MASK;
 
                 if (typ == XCB_CLIENT_MESSAGE &&
-                    cev->type == ATOM("XdndStatus")) {
+                    cev->type == XdndStatus) {
                         if (!(cev->data.data32[1] & 1)) {
                                 // XXX Send XdndLeave
                                 fprintf(stderr, "Target not accepting drag-and-drop\n");
@@ -385,7 +396,7 @@ do_dnd(xcb_window_t target)
                         memset(&msg, 0, sizeof msg);
                         msg.response_type = XCB_CLIENT_MESSAGE;
                         msg.window = target;
-                        msg.type = ATOM("XdndDrop");
+                        msg.type = XdndDrop;
                         msg.format = 32;
                         msg.data.data32[0] = source;
                         msg.data.data32[1] = 0;
@@ -405,13 +416,13 @@ do_dnd(xcb_window_t target)
                         xcb_warp_pointer(conn, XCB_WINDOW_NONE, target,
                                          0, 0, 0, 0, 10, 10);
                 } else if (typ == XCB_SELECTION_REQUEST) {
-                        if (sev->selection != ATOM("XdndSelection")) {
+                        if (sev->selection != XdndSelection) {
                                 fprintf(stderr,
                                         "Request for unknown selection %d\n",
                                         sev->selection);
                                 continue;
                         }
-                        if (sev->target != ATOM("text/uri-list")) {
+                        if (sev->target != textUriList) {
                                 fprintf(stderr,
                                         "Request for unknown target type %d\n",
                                         sev->target);
@@ -444,9 +455,9 @@ do_dnd(xcb_window_t target)
                                 v = xcb_send_event_checked(conn, 0, target, 0, (char*)&smsg);
                                 xcb_wait_and_check(v, "sending selection notify");
                         }
-                        while (xcb_task_main.next != &xcb_task_main) xcb_wait();
+                        xcb_wait();
                 } else if (typ == XCB_CLIENT_MESSAGE &&
-                           cev->type == ATOM("XdndFinished")) {
+                           cev->type == XdndFinished) {
                         break;
                 } else {
                         fprintf(stderr,
