@@ -1,7 +1,10 @@
+#define _GNU_SOURCE /* get_current_dir_name */
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/utsname.h>
 
 #include <pth.h>
 #include <xcb/xcb.h>
@@ -295,7 +298,7 @@ xcb_wait_and_check(xcb_void_cookie_t cookie, const char *info)
 }
 
 void
-do_dnd(xcb_window_t target)
+do_dnd(xcb_window_t target, const char *paste)
 {
         xcb_window_t source = xcb_generate_id(conn);
         xcb_void_cookie_t v;
@@ -434,14 +437,24 @@ do_dnd(xcb_window_t target)
                                 exit(1);
                         }
 
+                        // Expand paste to an file-DND-friendly URI.
+                        // This is subtler than it looks.  We pass a
+                        // "local" path, even if we actually want a
+                        // "remote" (say, Tramp) path.  Remote paths
+                        // are opened using url-handler-mode, which
+                        // will use FTP.  So, to get Emacs' usual path
+                        // handling, we pass a "local" path, so that
+                        // dnd-open-file just strips the file:// part,
+                        // and then invokes the usual
+                        // file-name-handler-alist mechanism.
+                        char *uri;
+                        asprintf(&uri, "file://%s", paste);
                         // Respond with selection contents
-                        //const char *paste = "file:///awk:/tmp/wiki2";
-                        const char *paste = "file:///home/amthrax/ssh/awk/tmp/wiki2";
                         XCB_ASYNC {
                                 v = xcb_change_property_checked
                                         (conn, XCB_PROP_MODE_REPLACE, sev->requestor,
                                          sev->property, XCB_ATOM_STRING, 8,
-                                         strlen(paste), paste);
+                                         strlen(uri), uri);
                                 xcb_wait_and_check(v, "returning selection");
                         }
                         XCB_ASYNC {
@@ -456,6 +469,7 @@ do_dnd(xcb_window_t target)
                                 xcb_wait_and_check(v, "sending selection notify");
                         }
                         xcb_wait();
+                        free(uri);
                 } else if (typ == XCB_CLIENT_MESSAGE &&
                            cev->type == XdndFinished) {
                         break;
@@ -467,9 +481,51 @@ do_dnd(xcb_window_t target)
         }
 }
 
+char *
+parse_args(int argc, char **argv)
+{
+        char *path;
+        char *cwd = get_current_dir_name();
+        if (argc == 1) {
+                path = strdup(cwd);
+        } else if (argc == 2) {
+                if (argv[1][0] == '/')
+                        path = strdup(argv[1]);
+                else if (strcmp(argv[1], ".") == 0)
+                        path = strdup(cwd);
+                else
+                        asprintf(&path, "%s/%s", cwd, argv[1]);
+        } else {
+                printf("usage: %s [path]", argv[0]);
+                exit(2);
+        }
+        free(cwd);
+
+        // X-forwarded paths
+        // XXX Make this configurable
+        // XXX Allow tramp, or some path template, or even external script
+        // XXX Detect this by comparing our hostname to the found
+        // window's hostname
+        if (getenv("SSH_CONNECTION")) {
+                char *oldpath = path;
+                // XXX This is what GNU hostname -s does.
+                struct utsname un;
+                if (uname(&un) < 0)
+                        panic("uname");
+                // XXX Hmm.  Would be nice to explicitly allow
+                // home-relative paths for cases like this.
+                asprintf(&path, "ssh/%s%s", un.nodename, oldpath);
+                free(oldpath);
+        }
+
+        return path;
+}
+
 int
 main(int argc, char **argv)
 {
+        char *path = parse_args(argc, argv);
+
         pth_init();
 
         conn = xcb_connect(NULL, NULL);
@@ -498,9 +554,10 @@ main(int argc, char **argv)
 
         printf("Best %x\n", best_window);
 
-        do_dnd(best_window);
+        do_dnd(best_window, path);
 
         xcb_disconnect(conn);
+        free(path);
         return 0;
 }
 
