@@ -1,3 +1,5 @@
+# Requires libpth-dev libxcb1-dev libxcb-event1-dev
+
 CFLAGS += -O2 -g
 
 CFLAGS += $(shell pth-config --cflags)

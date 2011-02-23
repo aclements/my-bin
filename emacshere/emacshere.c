@@ -10,6 +10,8 @@
 #include <xcb/xcb.h>
 #include <xcb/xcb_event.h>
 
+#define DEBUG 0
+
 void
 panic(const char *str)
 {
@@ -246,7 +248,9 @@ consider_target(xcb_window_t win)
 
         // Get access time (XXX support _NET_WM_USER_TIME_WINDOW)
         uint32_t user_time = card32_property(win, ATOM("_NET_WM_USER_TIME"));
-        printf("Visible %x %u\n", win, user_time);
+#if DEBUG
+        printf("Visible %#x user_time %u\n", win, user_time);
+#endif
         if (!best_user_time || user_time > best_user_time) {
                 best_user_time = user_time;
                 best_window = win;
@@ -542,7 +546,9 @@ main(int argc, char **argv)
                 rounds++;
                 xcb_wait();
         }
-        printf("%d rounds\n", rounds);
+#if DEBUG
+        printf("Window lookup took %d rounds\n", rounds);
+#endif
 
         if (!found_some) {
                 fprintf(stderr, "No Emacs windows found\n");
@@ -552,7 +558,9 @@ main(int argc, char **argv)
                 exit(1);
         }
 
-        printf("Best %x\n", best_window);
+#if DEBUG
+        printf("Best %#x\n", best_window);
+#endif
 
         do_dnd(best_window, path);
 
