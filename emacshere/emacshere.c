@@ -514,7 +514,7 @@ parse_args(int argc, char **argv)
                         panic("uname");
                 // XXX Hmm.  Would be nice to explicitly allow
                 // home-relative paths for cases like this.
-                asprintf(&path, "ssh/%s%s", un.nodename, oldpath);
+                asprintf(&path, "/home/amthrax/ssh/%s%s", un.nodename, oldpath);
                 free(oldpath);
         }
 
