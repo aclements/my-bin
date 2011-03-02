@@ -23,10 +23,10 @@ LDFLAGS += $(shell pth-config --ldflags --libs)
 CFLAGS += $(shell pkg-config --cflags xcb xcb-event)
 LDFLAGS += $(shell pkg-config --libs xcb xcb-event)
 
-emacshere: emacshere.o
+fling: fling.o
 
-emacshere.o: CFLAGS += -std=gnu99
+fling.o: CFLAGS += -std=gnu99
 
 clean:
-	rm -f emacshere emacshere.o
+	rm -f fling fling.o
 .PHONY: clean

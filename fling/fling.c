@@ -411,13 +411,16 @@ do_dnd(xcb_window_t target, const char *paste)
                         v = xcb_send_event_checked(conn, 0, target, 0, (char*)&msg);
                         xcb_wait_and_check(v, "Sending XdndDrop event");
 
+                        // XXX Use WM_TAKE_FOCUS
                         uint32_t conf[] = {XCB_STACK_MODE_ABOVE};
                         xcb_configure_window(conn, target,
                                              XCB_CONFIG_WINDOW_STACK_MODE,
                                              conf);
                         xcb_set_input_focus(conn, XCB_INPUT_FOCUS_POINTER_ROOT,
                                             target, XCB_CURRENT_TIME);
-                        // XXX
+                        // XXX Terrible.  Without this xmonad doesn't
+                        // realize the focus changed.
+                        // XXX Move mouse to middle?
                         xcb_warp_pointer(conn, XCB_WINDOW_NONE, screen->root,
                                          0, 0, 0, 0, 0, 0);
                         xcb_warp_pointer(conn, XCB_WINDOW_NONE, target,
