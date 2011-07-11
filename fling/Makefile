@@ -10,7 +10,7 @@ $(warning libxcb not found.  Please install libxcb1-dev)
 endif
 ifeq ($(shell pkg-config --exists xcb-event || echo no),no)
 MISSING = 1
-$(warning libxcb-event not found.  Please install libxcb-event1-dev)
+$(warning libxcb-event not found.  Please install libxcb-util0-dev or libxcb-event1-dev)
 endif
 
 ifeq (${MISSING},1)
