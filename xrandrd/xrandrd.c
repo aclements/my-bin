@@ -7,6 +7,16 @@
 
 // See also http://git.gnome.org/browse/gnome-settings-daemon/tree/plugins/xrandr/gsd-xrandr-manager.c
 
+// XXX Doesn't notice output changes that happen during suspend.
+// Unfortunately, there's no easy way to detect resume events (at
+// least, until DeviceKit becomes popular).  Could use the ConsoleKit
+// D-Bus events.  Could use a CLOCK_REALTIME timer with a longish
+// period (say, 30 seconds) and see if we get woken up much later than
+// 30 seconds.  This won't detect <30 second suspends, but will fire
+// the moment the system resumes (unlike CLOCK_MONOTONIC).
+// CLOCK_MONOTONIC would detect short suspends, but would take a while
+// to do so.
+
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
