@@ -47,7 +47,8 @@ destdir=
 for mpoint in `mount | awk '{print $3}'`; do
     if [[ ! -d $mpoint ]]; then
         echo "Mount point $mpoint is not a directory.  I'm confused"
-        exit 1
+        #exit 1
+        continue
     fi
     if [[ -f $mpoint/$dest ]]; then
         if [[ -n $destdir ]]; then
@@ -134,11 +135,13 @@ chmod a+x $tmpscript
 echo "Creating and encrypting backup to $tmpfilename"
 tar czPf - $0 $extrafiles -C / $srcdirs | \
     openssl enc -des3 -e -pass fd:3 -salt -out $tmpfilename 3<<<$passphrase
+echo "Size:" `ls -lh $tmpfilename | awk '{print $5}'`
 
 # Move files to the destination directory
 echo "Moving files to $destdir"
 while true; do
     retry=
+    unmove=
     for var in key script filename; do
         srcvar=tmp$var
         src=${!srcvar}
@@ -149,11 +152,19 @@ while true; do
             head -n 1 | sed 's/\.tar\.gz\.des3//'`
             if [[ -z $old ]]; then
                 echo "Not enough space, but no old backups to remove from $destdir"
+                if [[ -z $unmove ]]; then
+                    echo "No previous backup to unmove"
+                else
+                    echo "Returning previously moved backup from /tmp"
+                    $unmove
+                fi
                 exit 1
             fi
             echo "  Moving backup $old.* to /tmp to make room"
+            unmove=
             for ext in tar.gz.des3 key sh; do
                 mv $old.$ext /tmp/
+                unmove="${unmove}; cp /tmp/$old.$ext ."
             done
             retry=1
             break

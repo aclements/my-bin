@@ -1,88 +1,62 @@
 #!/usr/bin/python
 
-import os, sys, socket
-import socket
+import os, sys
 import getpass
 
-SOCKNAME = "/tmp/rbackupd-sock"
+from rbackup import Protocol, ProtocolError
 
-class Command(object):
+class Command(Protocol):
     nArgs = 0
 
-    def __init__(self, args):
-        self.__sock = socket.socket(socket.AF_UNIX)
-        self.__sock.connect(SOCKNAME)
+    def __init__(self, cmd, *args):
+        if len(args) != self.nArgs:
+            print >> sys.stderr, \
+                "Expected %d arguments, got %d" % (self.nArgs, len(args))
+            os.exit(1)
+        Protocol.__init__(self)
+        self.__status = None
         self.handle(*args)
 
-    def send(self, cmd, *args):
-        sock = self.__sock
-        sock.send(cmd+"\n")
-        for arg in args:
-            if "\n" in arg:
-                raise ValueError, "Argument contains newline"
-            sock.send(arg+"\n")
-        sock.send("\n")
-
-    def finish(self):
-        sock = self.__sock
-        while True:
-            ch = sock.recv(1)
-            if len(ch):
-                sys.stderr.write(ch)
-            else:
-                break
-        sock.shutdown(socket.SHUT_RDWR)
-        sock.close()
-
-    def waitFor(self, eline):
-        sock = self.__sock
-        while True:
-            try:
-                line = self.getLine()
-            except EOFError:
-                raise EOFError, "EOF waiting for %s" % `eline`
-            if line == eline:
-                break
-            else:
-                print >> sys.stderr, line
-
-    def getLine(self):
-        sock = self.__sock
-        buf = ""
-        while True:
-            ch = sock.recv(1)
-            if ch == "\n":
-                return buf
-            elif len(ch):
-                buf += ch
-            else:
-                raise EOFError, "EOF waiting for end of line"
-
-    def sendAndFinish(self, cmd, *args):
-        self.send(cmd, *args)
-        self.finish()
+    def setStatus(self, status):
+        self.__status = status
 
     def handle(self):
         raise NotImplementedError
 
+    def cmd_out(self, text):
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
+    def cmd_err(self, text):
+        sys.stderr.write(text)
+        sys.stderr.flush()
+
+    def cmd_end(self, code):
+        if self.__status != None:
+            sys.exit(self.__status)
+        else:
+            sys.exit(code)
+
 class CmdPassword(Command):
     def handle(self):
-        self.sendAndFinish("password", getpass.getpass("LUKS Password: "))
+        self.send("password", getpass.getpass("LUKS Password: ")).finish()
 
 class CmdMount(Command):
     def handle(self):
-        self.sendAndFinish("mount")
+        self.send("mount").finish()
 
 class CmdUmount(Command):
     def handle(self):
-        self.sendAndFinish("umount")
+        self.send("umount").finish()
+
+class CmdForceUmount(Command):
+    def handle(self):
+        self.send("forceumount").finish()
 
 class CmdRDServe(Command):
     def handle(self):
-        self.send("backupMount")
-        self.waitFor("=== Ready ===")
-        dest = self.getLine()
-        # dest = "/media/backup"
+        self.send("mountAndUnmount")
+        _, dest = self.recv("mounted")
 
         print >> sys.stderr, "Starting rdiff-backup"
         res = os.spawnlp(os.P_WAIT, "rdiff-backup",
@@ -92,15 +66,23 @@ class CmdRDServe(Command):
         if res != 0:
             print >> sys.stderr, \
                 "rdiff-backup FAILED with error %d" % res
+            self.setStatus(res)
         else:
             print >> sys.stderr, "rdiff-backup completed successfully"
-        print >> sys.stderr
 
-        self.sendAndFinish("continue")
+        print >> sys.stderr
+        self.send("continue").finish()
+
+    def cmd_out(self, text):
+        # Any output that doesn't come from rdiff-backup must be
+        # redirected to stderr so it doesn't confuse the remote
+        # rdiff-backup
+        self.cmd_err(text)
 
 commands = {"password" : CmdPassword,
             "mount" : CmdMount,
             "umount" : CmdUmount,
+            "forceumount" : CmdForceUmount,
             "rdserve" : CmdRDServe}
 
 def main():
@@ -114,13 +96,8 @@ def main():
     if cmd not in commands:
         print >> sys.stderr, "Unknown command %s" % `cmd`
         return
-    args = sys.argv[2:]
-    expect = commands[cmd].nArgs
-    if len(args) != expect:
-        print >> sys.stderr, \
-            "Expected %d arguments, got %d" % (expect, len(args))
-        return
-    commands[cmd](args)
+    args = sys.argv[1:]
+    commands[cmd](*args)
 
 if __name__ == "__main__":
     main()
