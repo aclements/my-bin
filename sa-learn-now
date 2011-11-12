@@ -1,18 +1,21 @@
 #!/usr/bin/zsh
 
-SPAM=()
+set -e
+
+SPAM=~/Maildir/spam
+SPAM_ARCHIVE=~/archive/spam
+
+# Find ham directories
 HAM=()
 for d in $(find ~/Maildir \( -name cur -o -name new -o -name tmp \) -prune -o \( -type d -print \) | sort); do
     if [[ ! -d $d/cur || ! -d $d/new || ! -d $d/tmp ]]; then
         continue
     fi
     case `basename $d` in
-        spam)
-            SPAM=($SPAM $d/cur $d/new);;
         INBOX|spam*|virus*|reuse|Trash|Sent|Drafts)
             ;;
         *)
-            HAM=($HAM $d/cur $d/new);;
+            HAM=($HAM $d);;
     esac
 done
 
@@ -22,23 +25,33 @@ if [[ -t 1 ]]; then
     EXTRA="--progress"
 fi
 
-echo "[$(date)] Scanning spam"
-sa-learn $EXTRA --spam $SPAM
+# Scan spam
+[[ -n $ISATTY ]] && echo "[$(date)] Scanning spam"
+sa-learn $EXTRA --spam ~/Maildir/spam/{new,cur}
 
-echo "[$(date)] Scanning ham"
-sa-learn $EXTRA --ham $HAM
+# Archive spam
+[[ -n $ISATTY ]] && echo "[$(date)] Archiving spam"
+for sub in cur new; do
+    find $SPAM/$sub -maxdepth 1 -type f -print0 | xargs -0r mv -t $SPAM_ARCHIVE/$sub
+done
 
-COUNT=$(ls -1 $SPAM | wc -l)
-if (( $COUNT >= 5000 )); then
-    SPAMDIR=~/Maildir/spam
-    OUTNUM=1
-    while [[ -f $SPAMDIR.$OUTNUM ]]; do
-        OUTNUM=$(( OUTNUM + 1 ))
-    done
-    echo "[$(date)] Moving $COUNT spam to $SPAMDIR.$OUTNUM"
-    mv -T $SPAMDIR $SPAMDIR.$OUTNUM
-    mu-mkmdir $SPAMDIR
-    touch $SPAMDIR/.nobackup
+# Scan ham
+[[ -n $ISATTY ]] && echo "[$(date)] Scanning ham"
+# Save our starting timestamp
+touch ~/.spamassassin/curscan
+if [[ ! -f ~/.spamassassin/lastscan ]]; then
+    # If we've never scanned ham before, limit to past month
+    touch --date="1 month ago" ~/.spamassassin/lastscan
 fi
+for d in $HAM; do
+    # Only scan ham newer than the last scan
+    find $d -newer ~/.spamassassin/lastscan -type f > /tmp/ham.$$
+    if [[ -s /tmp/ham.$$ ]]; then
+        [[ -n $ISATTY ]] && echo $(basename $d)
+        sa-learn $EXTRA --ham -f/tmp/ham.$$
+    fi
+done
+# Update our last scan time
+mv ~/.spamassassin/curscan ~/.spamassassin/lastscan
 
-echo "[$(date)] Done"
+[[ -n $ISATTY ]] && echo "[$(date)] Done"
