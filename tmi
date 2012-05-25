@@ -1,0 +1,209 @@
+#!/usr/bin/python -i
+
+import os.path
+
+import pygtk
+pygtk.require('2.0')
+import gtk, gobject
+import pynotify
+
+class TMINotify:
+    def __init__(self, sources):
+        self.__sources = sources
+        pynotify.init("TMI")
+        self.__notes = []
+        self.__lastClipboard = ""
+        # We can't create a 0x0 pixbuf, so make a transparent 1x1 pixbuf
+        self.__emptyPixbuf = gtk.gdk.Pixbuf(gtk.gdk.COLORSPACE_RGB, True, 8, 1, 1)
+        self.__emptyPixbuf.fill(0x00000000)
+        self.__clipboard = gtk.Clipboard(selection = gtk.gdk.SELECTION_PRIMARY)
+        self.__clipboard.connect("owner-change", self.__onClipboardChange)
+
+    def __onClipboardChange(self, clipboard, ev):
+        clipboard.request_text(self.__onClipboardContents)
+
+    def __onClipboardContents(self, clipboard, text, data):
+        if not text:
+            return
+        if text == self.__lastClipboard:
+            return
+        self.__lastClipboard = text
+        res = self.doQuery(text)
+        if res:
+            self.showResults(res)
+
+    def doQuery(self, query):
+        query = query.strip()
+        if not query:
+            return
+        res = []
+        for s in self.__sources:
+            res1 = s.query(query)
+            if res1:
+                sn = s.getName()
+                for (title, text, image) in res1:
+                    res.append((title + " (" + sn + ")", text, image))
+        return res
+
+    def showResults(self, res):
+        if len(self.__notes) > len(res):
+            # Close extra notifications
+            for n in self.__notes[len(res):]:
+                try:
+                    n.close()
+                except gobject.GError:
+                    # Closing a closed notification is an error
+                    pass
+            self.__notes = self.__notes[:len(res)]
+        else:
+            # Create new notifications
+            while len(self.__notes) < len(res):
+                # "" triggers an assertion error and None doesn't
+                # translate to NULL.
+                self.__notes.append(pynotify.Notification("x"))
+
+        for i, (title, text, image) in enumerate(res):
+            n = self.__notes[i]
+            n.update(title, text)
+            if image:
+                n.set_icon_from_pixbuf(image)
+            else:
+                # There's no method to clear the icon
+                n.set_icon_from_pixbuf(self.__emptyPixbuf)
+            n.show()
+
+    def main(self):
+        gtk.main()
+
+import pyPdf, re
+
+class ClassPDFSource:
+    def __init__(self, path):
+        path = os.path.expanduser(os.path.expandvars(path))
+        self.__xlate = "".join([chr(i) if chr(i).isalpha() else " " for i in range(256)])
+        self.__name, self.__data = self.__parse(path)
+
+    def __qset(self, query):
+        return set(query.translate(self.__xlate).split())
+
+    def getName(self):
+        return self.__name
+
+    def query(self, query):
+        qset = self.__qset(query)
+        res = []
+        for name, nameset, lname, email, data, image in self.__data:
+            # Subset isn't really right.  If there's one query word,
+            # match last name.  If there are two words in the query,
+            # match first and last name.  If there are more, match
+            # first and last and a subset of middle names.
+            if ((len(qset) > 1 and qset.issubset(nameset)) or
+                query.lower() == email.lower() or
+                query.lower() == "<" + email.lower() + ">" or
+                (email.endswith("@mit.edu") and query == email[:-8]) or
+                query == lname):
+                #body = "\n".join("<b>%s:</b> %s" % (k, v) for k, v in data)
+                #body = "\n\n".join("%s\n<b>%s</b>" % (v, k) for k, v in data)
+                body = "\n\n".join("<b>%s</b>\n%s" % (k, v) for k, v in data)
+                res.append((name, body, image))
+        return res
+
+    def __parse(self, path):
+        pdf = pyPdf.PdfFileReader(file(path, "rb"))
+        blocks = self.__getBlocks(pdf)
+
+        header = blocks.pop(0)[1]
+        # 12 for a class, 21 for a section
+        if len(header) != 12 and len(header) != 21:
+            raise RuntimeError(
+                "Expected 12 or 21 text segments in header, got %d: %s" %
+                (len(header), header))
+        classnum = header[1].strip()
+        m = re.match("(Spring|Fall) Term ([0-9]+)-([0-9]+)$", header[3].strip())
+        if not m:
+            raise RuntimeError(
+                "Expected term in header, got %s", header[3])
+        if m.group(1) == "Spring":
+            term = "Spring '" + m.group(3)[-2:]
+        else:
+            term = "Fall '" + m.group(2)[-2:]
+
+        res = []
+        for image, block in blocks:
+            # If a picture is missing, the text block gets appended to
+            # the previous text block.
+            rest = block
+            while len(rest) >= 6:
+                res.append(self.__parseBlock(image, rest))
+                rest = rest[6:]
+                image = None
+            if len(rest) != 0:
+                raise RuntimeError("Expected 6*n text segments in student block, got %d: %s" % (len(block), block))
+        return classnum + " " + term, res
+
+    def __getBlocks(self, pdf):
+        blocks = []
+        lastImage = None
+        for p in pdf.pages:
+            xobjs = p["/Resources"].getObject()["/XObject"].getObject()
+            content = p["/Contents"].getObject()
+            if not isinstance(content, pyPdf.pdf.ContentStream):
+                content = pyPdf.pdf.ContentStream(content, pdf)
+            for operands, operator in content.operations:
+                #print operator, operands, type(operands)
+                if operator == "BT":
+                    # Text block
+                    segment = []
+                    if lastImage:
+                        pixbuf = self.__pixbufFromJPEG(lastImage)
+                    else:
+                        pixbuf = None
+                    blocks.append((pixbuf, segment))
+                    lastImage = None
+                elif operator == "Tj":
+                    # Output text
+                    segment.append(operands[0])
+                elif operator == "Do":
+                    # External object reference
+                    xobj = xobjs[operands[0]]
+                    if xobj["/Subtype"] == "/Image" and xobj["/Filter"] == ["/DCTDecode"]:
+                        data = xobj._data
+                        lastImage = data
+        return blocks
+
+    def __pixbufFromJPEG(self, jpeg):
+        pl = gtk.gdk.PixbufLoader()
+        pl.write(jpeg)
+        pl.close()
+        pixbuf = pl.get_pixbuf()
+        if not pixbuf:
+            return
+        w, h = pixbuf.get_width(), pixbuf.get_height()
+        if w > h:
+            dstw, dsth = 150, h*150/w
+        else:
+            dstw, dsth = w*150/h, 150
+        return pixbuf.scale_simple(dstw, dsth, gtk.gdk.INTERP_HYPER)
+
+    def __parseBlock(self, image, block):
+        lname, _, fname = block[0].partition(",")
+        name = fname.strip().strip(".") + " " + lname.strip()
+        nameset = self.__qset(name)
+        email = block[1].strip()
+        data = [("Email", email)]
+        for b in block:
+            if b.startswith("Year:"):
+                data.append(("Year", b[5:].strip()))
+            elif b.startswith("Course:"):
+                data.append(("Course", "-".join(b[7:].strip().split())))
+        return name, nameset, lname, email, data, image
+
+if __name__ == "__main__":
+    sources = [ClassPDFSource("~/etc/6.828-fa-11.pdf"),
+               ClassPDFSource("~/etc/6.828-fa-10.pdf"),
+               ClassPDFSource("~/etc/6.828-fa-09.pdf"),
+               ClassPDFSource("~/etc/6.001-sp-07.pdf"),
+               ClassPDFSource("~/etc/6.001-sp-06.pdf"),
+               ClassPDFSource("~/etc/6.001-sp-04.pdf"),
+               ]
+    TMINotify(sources).main()
