@@ -1,0 +1,16 @@
+#!/bin/zsh
+
+set -e
+
+STATUS=0
+cd /z/git
+for repo in *; do
+    if [[ -d $repo ]]; then
+        if ! ssh am.lcs "[ -d backup/git/$repo ] || git init --bare backup/git/$repo"; then
+            STATUS=$?
+        elif ! (cd $repo && git push -q --mirror am.lcs:backup/git/$repo); then
+            STATUS=$?
+        fi
+    fi
+done
+exit $STATUS

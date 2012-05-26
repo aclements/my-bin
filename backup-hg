@@ -1,0 +1,15 @@
+#!/bin/zsh
+
+set -e
+
+cd /z/hg
+# XXX This can create a slightly incorrect backup.  See
+#  http://mercurial.selenic.com/wiki/BackUp
+# But backs up thing like hgrc.  Also, hg on amsterdam is so old it
+# doesn't like being pushed to.
+rsync -a --delete ./ am.lcs:backup/hg
+
+# XXX Could stop once we find .hg
+#for repo in $(find -name .hg -type dir); do
+#    (cd $repo && hg push -f ssh://am.lcs/backup/hg/$repo)
+#done

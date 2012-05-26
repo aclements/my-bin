@@ -1,0 +1,14 @@
+#!/bin/zsh
+
+set -e
+
+REPOS=(amthrax sysfiles)
+TMP=/tmp/backup-svn-$$
+
+mkdir $TMP
+for repo in $REPOS; do
+    svnadmin dump -q /z/svn/$repo > $TMP/$repo
+    rsync $TMP/$repo am.lcs:backup/svn/
+    rm $TMP/$repo
+done
+rmdir $TMP
