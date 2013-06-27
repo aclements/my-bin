@@ -1,0 +1,4 @@
+#!/bin/sh
+
+NCPU=$(grep ^processor /proc/cpuinfo | wc -l)
+exec nice make -j$(expr $NCPU \* 2) "$@"
