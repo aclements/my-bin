@@ -1,0 +1,14 @@
+#!/usr/bin/python
+
+import pty, os, select, re, getpass, sys
+
+(pid, fd) = pty.fork()
+if pid == 0:
+    os.execlp(sys.argv[1], *sys.argv[1:])
+while True:
+    try:
+        x = os.read(fd, 1024)
+    except OSError:
+        break
+    sys.stdout.write(x)
+    sys.stdout.flush()
