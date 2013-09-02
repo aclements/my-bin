@@ -28,7 +28,7 @@ elif len(sys.argv) > 1:
 
     message['title'] = ('Command ' + ' '.join(sys.argv[1:]))[:128]
     if code == 0:
-        message['message'] = 'Finished'
+        message['message'] = 'Success'
     elif signame:
         message['message'] = 'Terminated by %s' % signame
     else:
