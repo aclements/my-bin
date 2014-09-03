@@ -5,13 +5,24 @@ from optparse import OptionParser
 import BaseHTTPServer
 from CGIHTTPServer import CGIHTTPRequestHandler
 from SocketServer import ThreadingMixIn
+from urlparse import urlparse
 
 class MyReqHandler(CGIHTTPRequestHandler):
     def is_cgi(self):
-        if options.cgi and self.path.endswith(".cgi"):
-            slash = self.path.find("/")
-            self.cgi_info = self.path[:slash], self.path[slash+1:]
+        if not options.cgi:
+            return False
+
+        preqs = self.path.split("?", 1)[0]
+        dir, rest = preqs.rsplit("/", 1)
+        url = urlparse(self.path)
+        if url.path.endswith(".cgi"):
+            self.cgi_info = dir, rest
             return True
+        if url.path.endswith("/"):
+            fspath = self.translate_path(preqs)
+            if os.path.exists(os.path.join(fspath, "index.cgi")):
+                self.cgi_info = dir, "index.cgi"
+                return True
         return False
 
 class MyHTTPServer(ThreadingMixIn, BaseHTTPServer.HTTPServer): pass
