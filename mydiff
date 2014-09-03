@@ -39,7 +39,9 @@ def colorize():
             # SVN
             l.startswith("Index: ") or l.startswith("======") or
             # git
-            l.startswith("index ")):
+            l.startswith("index ") or l.startswith("new file ")):
+            # XXX Perhaps we should color one header per file, or
+            # maybe this should even be the 'else' path
             color = HEADER
         else:
             color = None
@@ -49,6 +51,7 @@ def colorize():
             sys.stdout.write(l)
             if color != None:
                 sys.stdout.write(default)
+            sys.stdout.flush()
         except IOError:
             # less must have gone away
             sys.exit(1)
