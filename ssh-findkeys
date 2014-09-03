@@ -1,0 +1,52 @@
+#!/bin/zsh
+
+AGENTENV=~/.ssh/agent-env-$(hostname)
+
+is_agent_running() {
+    [[ -z $SSH_AUTH_SOCK ]] && return 1
+    ssh-add -l &> /dev/null
+    local res=$?
+    if (( $res == 0 )); then
+        # Agent running and contains keys
+        return 0
+    elif (( $res == 1 )); then
+        # Agent running but contains no keys
+        if [[ $1 == --haskeys ]]; then
+            return 1
+        else
+            return 0
+        fi
+    elif (( $res == 2 )); then
+        # No agent running
+        return 1
+    else
+        echo "Unknown return code from ssh-add -l: $res" >&2
+        return 2
+    fi
+}
+
+if is_agent_running; then
+    exit
+fi
+
+if [[ ! -e $AGENTENV ]]; then
+    echo "Cannot connect to existing agent.  $AGENTENV doesn't exist." >&2
+    echo "return 1"
+    exit 1
+fi
+
+source $AGENTENV >& /dev/null
+
+if ! is_agent_running; then
+    echo "Cannot connect to existing agent.  $AGENTENV is stale." >&2
+    echo "return 1"
+    exit 1
+fi
+
+if ! is_agent_running --haskeys; then
+    echo "Existing agent contains no keys." >&2
+    echo "return 1"
+    exit 1
+fi
+
+cat $AGENTENV | grep -v '^echo '
