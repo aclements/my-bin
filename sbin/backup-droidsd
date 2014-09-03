@@ -1,0 +1,18 @@
+#!/bin/zsh
+
+DEV=/dev/disk/by-uuid/1195-6587
+
+set -e
+
+if [[ ! -e $DEV ]]; then
+    echo "Droid SD does not appear to be mounted" >&2
+    exit 1
+fi
+
+echo "Mounting $DEV" >&2
+sudo mount $DEV /media/droidsd
+echo "Tarring and sending to awakening" >&2
+tar cv -C /media droidsd | ssh awk cat \> \~/backups/droidsd.tar.tmp
+ssh awk mv \~/backups/droidsd.tar.tmp \~/backups/droidsd.tar
+echo "All done.  Unmounting"
+sudo umount /media/droidsd
