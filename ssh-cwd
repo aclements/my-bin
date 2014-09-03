@@ -10,6 +10,12 @@ from pipes import quote
 #
 # XXX This should be a config file
 #
+# XXX Be able to recognize the "most natural" host for a given path so
+# the host name can be omitted entirely.  "ssh-dwim".  For sshfs this
+# could be inferred from the mount table (unfortunately, for NFS,
+# while the host can be inferred, the equivalent directory cannot).
+# Ugh, though afuse makes this hard because it mounts under /tmp.
+#
 # XXX Perhaps these should match hostname -f.  Then I could use this
 # same map for ssh-dwim, since ssh-dwim needs to *use* the hostname,
 # not just recognize it.  OTOH, ssh-dwim's needs are different: it

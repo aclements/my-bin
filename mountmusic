@@ -1,5 +1,7 @@
 #!/bin/zsh
 
+# XXX mount.cifs seems to ignore the port argument now
+
 set -e
 
 STYLE=autossh

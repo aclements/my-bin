@@ -2,5 +2,8 @@
 
 WID=`xdotool search --class stalonetray | head -n 1`
 WIDTH=`xwininfo -id $WID | awk '/Width:/ { print $2 }'`
-SCWIDTH=`xwininfo -root | awk '/Width:/ { print $2 }'`
+SCWIDTH=`xrandr --current -q | awk '/\+0\+0/ {print $3}' | sed 's/\([0-9]*\)x.*/\1/'`
+if [[ -z $SCWIDTH ]]; then
+    SCWIDTH=`xwininfo -root | awk '/Width:/ { print $2 }'`
+fi
 xdotool windowmove $WID $(( $SCWIDTH - $WIDTH )) 0
