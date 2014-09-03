@@ -6,7 +6,7 @@ ASKPASSERS=(ssh-askpass x11-ssh-askpass gtk2-ssh-askpass $SSH_ASKPASS)
 # File in which to look for and store the agent environment.  If blank
 # or unset, rely on an agent environment to already be present (though
 # behave sanely if no agent is running)
-AGENTENV=~/.ssh/agent-env-$HOST
+AGENTENV=~/.ssh/agent-env-$(hostname)
 # If non-blank, start an agent if one isn't already running and store
 # its environment in $AGENTENV for future use
 STARTAGENT=1
