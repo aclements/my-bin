@@ -13,10 +13,17 @@ from rbackup import Protocol, ProtocolError, SOCKNAME
 
 # The directory on which to mount the backup partition
 DEST = "/media/backup"
+
 # The UUID of the partition to mount
-UUID = "17028002-0db7-46f7-ae8e-ac4110622a6c"
-# The name of the crypto-mapping to use
-MAPPING = "backup"
+# USB simpledrive
+UUID = "8218f615-ce57-44c0-ad67-36bac1233bfb"
+# Failed Seagate 750MB external eSATA
+#UUID = "17028002-0db7-46f7-ae8e-ac4110622a6c"
+
+# The name of the crypto-mapping to use or None for no crypto
+#MAPPING = "backup"
+MAPPING = None
+
 # Either None, or the double SHA-1 of the LUKS password.  This is used
 # for checking the password command, because otherwise it can't
 # recognize an incorrect password until mount time.
@@ -155,7 +162,7 @@ def getLUKSInfo(mapID):
                    readStdout = True)
     lines = info.split("\n")
     fl = lines[0].split(" ")
-    if len(fl) != 3 or fl[1] != "is" or fl[2] != "active:":
+    if len(fl) != 3 or fl[1] != "is" or fl[2] != "active.":
         raise ValueError, "Unparsable first line in 'cryptsetup status %s': %s" \
             % (mapID, `lines[0]`)
     lines = lines[1:]
@@ -273,11 +280,15 @@ def mount():
     with mountLock:
         if mountCount == 0:
             blockDev = findDevice(UUID)
-            mapDev = mapDevice(blockDev, MAPPING)
+            if MAPPING:
+                mapDev = mapDevice(blockDev, MAPPING)
+            else:
+                mapDev = blockDev
             try:
                 mountDevice(mapDev, DEST)
             except:
-                unmapDevice(MAPPING)
+                if MAPPING:
+                    unmapDevice(MAPPING)
                 raise
         else:
             print "Not mounting; already mounted"
@@ -288,7 +299,8 @@ def umount():
     with mountLock:
         if mountCount == 1:
             unmountDevice(DEST)
-            unmapDevice(MAPPING)
+            if MAPPING:
+                unmapDevice(MAPPING)
         elif mountCount > 0:
             print "Not unmounting; still in use by %d client(s)" % \
                 (mountCount-1)
