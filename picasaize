@@ -1,0 +1,176 @@
+#!/usr/bin/python
+
+import os, getpass
+
+import sqlite3
+
+import gdata.photos.service
+import gdata.media
+
+#
+# Digikam
+#
+
+class DigikamDB(object):
+    def __init__(self, dbPath):
+        self.__db = sqlite3.connect(dbPath)
+        self.__tags = self.__getTags()
+        self.__urlCache = {}
+
+    def __getTags(self):
+        tagInfo = {}
+        sql = "select id, pid, name from Tags"
+        for tid, pid, name in self.__db.execute(sql):
+            tagInfo[tid] = (pid, name)
+
+        # Resolve hierarchy
+        tags = {}
+        for tid in tagInfo.keys():
+            tag = []
+            tags[tid] = tag
+            while tid != 0:
+                tid, name = tagInfo[tid]
+                tag.append(name)
+            tag.reverse()
+
+        return tags
+
+    def _iterImageTags(self, imageid):
+        sql = "select tagid from ImageTags where imageid = ?"
+        for (tid,) in self.__db.execute(sql, (imageid,)):
+            yield self.__tags[tid]
+
+    def _iterComments(self, imageid):
+        sql = "select comment from ImageComments where imageid = ?"
+        for (comment,) in self.__db.execute(sql, (imageid,)):
+            yield comment
+
+    def __albumUrlToPath(self, url):
+        if url not in self.__urlCache:
+            if url.startswith("volumeid:?uuid="):
+                uuid = url[15:]
+                assert "/" not in uuid
+                dev = os.path.realpath("/dev/disk/by-uuid/" + uuid)
+                for mount in file("/proc/mounts"):
+                    mdev, mpath = mount.split()[:2]
+                    if not mdev.startswith("/"):
+                        continue
+                    if os.path.realpath(mdev) == dev:
+                        self.__urlCache[url] = mpath
+                        break
+                else:
+                    raise ValueError("Failed to translate UUID %r to device" % uuid)
+            else:
+                raise ValueError("Don't understand album URL %r" % url)
+        return self.__urlCache[url]
+
+    def iterImages(self):
+        imgs = self.__db.execute("select Images.id, AlbumRoots.identifier,"
+                                 " AlbumRoots.specificPath, Albums.relativePath,"
+                                 " Images.name,"
+                                 " strftime('%s', ImageInformation.creationDate),"
+                                 " ImageInformation.rating"
+                                 " from Images, AlbumRoots, Albums, ImageInformation"
+                                 " where Images.id = ImageInformation.imageid"
+                                 " and Images.album = Albums.id"
+                                 " and Albums.albumRoot = AlbumRoots.id")
+        for iid, albumUrl, albumRoot, albumPath, name, creationDate, rating in imgs:
+            # XXX Could get ImageInformation lazily
+            rootRoot = self.__albumUrlToPath(albumUrl)
+#            print rootRoot, albumRoot, albumPath, name
+            path = os.path.join(rootRoot, albumRoot.lstrip("/"), albumPath.lstrip("/"), name)
+            props = {"path": path,
+                     "album": albumPath,
+                     "creationDate": int(creationDate),
+                     "rating": rating}
+            yield Image(self, iid, props)
+
+class Image(object):
+    def __init__(self, db, imageid, props):
+        self.__db = db
+        self.__id = imageid
+        self.__props = props
+
+    def __getattr__(self, name):
+        if name in self.__props:
+            return self.__props[name]
+
+        if name == "tags":
+            value = list(self.__db._iterImageTags(self.__id))
+        elif name == "size":
+            value = os.stat(self.path).st_size
+        elif name == "comment":
+            values = [c for c in self.__db._iterComments(self.__id)
+                      if c != ""]
+            if len(values) == 0:
+                value = ""
+            elif len(values) == 1:
+                value = values[0]
+            else:
+                raise ValueError("Multiple comments for %s" % self.path)
+        else:
+            raise AttributeError()
+
+        self.__props[name] = value
+        return self.__props[name]
+
+#
+# Picasa Web
+#
+
+class Picasa(object):
+    def __init__(self, email):
+        gd = gdata.photos.service.PhotosService()
+        gd.email = email
+        gd.password = getpass.getpass("Password for %s: " % email)
+        gd.source = 'amdragon-picasaize-1'
+        gd.ProgrammaticLogin()
+
+        self.__gd = gd
+
+    def ensureAlbum(self, title, summary):
+        return self.__gd.InsertAlbum(title=title, summary=summary)
+
+    def postPhoto(self, album, image):
+        #albumUrl = '/data/feed/api/user/default/albumid/%s' % album.gphoto_id.text
+        albumUrl = album
+        title = os.path.basename(image.path)
+        summary = image.comment
+        photo = self.__gd.InsertPhotoSimple(albumUrl, title, summary,
+                                            image.path)
+
+
+db = DigikamDB(os.path.expanduser("~/img/digicam/digikam4.db"))
+
+
+
+
+def imageRank(img):
+    starred = any(t[0] == "Starred" for t in img.tags)
+    age = latest - img.creationDate
+    if starred:
+        return age
+    else:
+        return age * 10
+
+def postFilter(img):
+    if img.size > 5*1024*1024:
+        return False
+    return True
+
+images = list(db.iterImages())
+latest = max(img.creationDate for img in images)
+images.sort(key = imageRank)
+totalBytes = 0
+upload = []
+for img in images:
+    if not postFilter(img):
+        continue
+    totalBytes += img.size
+    if totalBytes > 100*1024*1024:
+        break
+    upload.append(img)
+
+pi = Picasa("amdragon@mit.edu")
+album = pi.ensureAlbum(upload[0].album, "")
+pi.postPhoto(album, upload[0])
