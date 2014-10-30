@@ -1,0 +1,16 @@
+#!/bin/zsh
+
+# Hack the code of the Cinnamon desktop environment to fix some dumb
+# hard-coded constants
+
+sed -i '
+# Disable the delay between alt-tabing and highlighting the target
+# window.
+s/\(PREVIEW_DELAY_TIMEOUT *= *\)[0-9]*/\10/;
+
+# Use a minimal fade-out when switching so the user can quickly
+# distinguish the selected window from others.
+s/\(PREVIEW_SWITCHER_FADEOUT_TIME *= *\)[0-9.]*/\10.05/;' \
+    /usr/share/cinnamon/js/ui/appSwitcher/classicSwitcher.js
+
+echo "Use Alt+F2 r <RET> to restart Cinnamon"
