@@ -94,10 +94,13 @@ if pin == None:
     status = 0
 else:
     status = pin.wait()
-    # 0 and 1 are standard for diff.  Exit on other codes.
-    if status > 1:
-        sys.exit(status)
-    elif status < 0:
+    # diff can return 2 "trouble" even for mundane things like files
+    # only being in one of two directories, so we can't get much from
+    # its exit code.  If something went really wrong, the message from
+    # diff was probably short, so less will exit right away anyway.
+    if status < 0:
+        if pout != None:
+            pout.terminate()
         os.kill(os.getpid(), -status)
 
 # Wait for less process to finish (else we'll trash the terminal)
