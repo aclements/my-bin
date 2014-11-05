@@ -1,0 +1,71 @@
+#!/bin/sh
+# Run a command over a sequence of commits.  Based on
+#   https://github.com/dustin/bindir/blob/master/git-test-sequence
+# Example:
+#   git test-sequence origin/master.. 'make clean && make test'
+
+USAGE='<rev-list> <cmd>'
+LONG_USAGE='Checkout each revision in <rev-list> and execute <cmd>.'
+SUBDIRECTORY_OK=Yes
+. "$(git --exec-path)/git-sh-setup"
+require_work_tree
+
+# Verify HEAD (from git-bisect)
+head=$(GIT_DIR="$GIT_DIR" git symbolic-ref -q HEAD) ||
+head=$(GIT_DIR="$GIT_DIR" git rev-parse --verify HEAD) ||
+die "Bad HEAD - I need a HEAD"
+
+_x40='[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+_x40="$_x40$_x40$_x40$_x40$_x40$_x40$_x40$_x40"
+case "$head" in
+    refs/heads/*|$_x40)
+        [ -s "$GIT_DIR/head-name" ] &&
+        die "won't bisect on seeked tree"
+        head="${head#refs/heads/}"
+        ;;
+    *)
+        die "Bad HEAD - strange symbolic ref"
+        ;;
+esac
+
+# Verify clean working tree
+git update-index --ignore-submodules --refresh &&
+git diff-files --ignore-submodules --quiet &&
+git diff-index --ignore-submodules --cached --quiet HEAD -- ||
+die "your working tree is not up-to-date"
+
+cleanup() {
+    git checkout -q $head
+}
+
+trap cleanup 0
+
+revlist="$1"
+shift
+failed=
+prevtime=x
+for v in `git rev-list --reverse $revlist`; do
+    echo >&2
+    git rev-list -n 1 --oneline $v >&2
+    echo "===============================================================================" >&2
+    # Ensure mtime's are updated by checkout (this is *not* enough to
+    # guarantee that they'll be different from target files if the
+    # command is make).
+    now=$(date +%s)
+    while [ x"$now" = x"$prevtime" ]; do
+        sleep 1
+        now=$(date +%s)
+    done
+    prevtime=$now
+    git checkout -q $v --
+    eval "$@" || failed="$failed
+$(git rev-list -n 1 --oneline $v)"
+done
+
+if [ x"$failed" != x ]; then
+    echo >&2
+    echo >&2
+    echo "The following revisions failed:" >&2
+    echo "$failed" >&2
+    exit 1
+fi
