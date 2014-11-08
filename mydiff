@@ -67,7 +67,7 @@ def usage():
     sys.exit(2)
 
 if len(sys.argv) > 1:
-    pin = subprocess.Popen(["diff", "-u"] + sys.argv[1:], stdout = subprocess.PIPE)
+    pin = subprocess.Popen(["diff", "-u", "-p"] + sys.argv[1:], stdout = subprocess.PIPE)
     sys.stdin = pin.stdout
 else:
     pin = None
