@@ -18,10 +18,11 @@ $(error Required libraries are missing)
 endif
 
 CFLAGS += $(shell pth-config --cflags)
-LDFLAGS += $(shell pth-config --ldflags --libs)
+LDFLAGS += $(shell pth-config --ldflags)
+LDLIBS += $(shell pth-config --libs)
 
 CFLAGS += $(shell pkg-config --cflags xcb xcb-event)
-LDFLAGS += $(shell pkg-config --libs xcb xcb-event)
+LDLIBS += $(shell pkg-config --libs xcb xcb-event)
 
 fling: fling.o
 
