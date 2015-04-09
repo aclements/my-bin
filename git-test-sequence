@@ -77,7 +77,7 @@ for v in `git rev-list --reverse $revlist`; do
 
     # Run command
     logfile=log.$(git rev-parse --short HEAD)
-    if eval "$@" > $logfile; then
+    if eval "$@" > $logfile 2>&1; then
         rm $logfile
         res="PASS"; color=2
     else
