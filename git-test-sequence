@@ -19,8 +19,10 @@ _x40='[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
 _x40="$_x40$_x40$_x40$_x40$_x40$_x40$_x40$_x40"
 case "$head" in
     refs/heads/*|$_x40)
-        [ -s "$GIT_DIR/head-name" ] &&
-        die "won't bisect on seeked tree"
+        # This error message should only be triggered by
+        # cogito usage, and cogito users should understand
+        # it relates to cg-seek.
+        [ -s "$GIT_DIR/head-name" ] && die "won't check out on cg-seek'ed tree"
         head="${head#refs/heads/}"
         ;;
     *)
@@ -42,12 +44,12 @@ trap cleanup 0
 
 revlist="$1"
 shift
-failed=
+failed=0
 prevtime=x
 for v in `git rev-list --reverse $revlist`; do
-    echo >&2
-    git rev-list -n 1 --oneline $v >&2
-    echo "===============================================================================" >&2
+    echo -n "$(git rev-list -n 1 --oneline $v) "
+    tput sc
+
     # Ensure mtime's are updated by checkout (this is *not* enough to
     # guarantee that they'll be different from target files if the
     # command is make).
@@ -58,14 +60,49 @@ for v in `git rev-list --reverse $revlist`; do
     done
     prevtime=$now
     git checkout -q $v --
-    eval "$@" || failed="$failed
-$(git rev-list -n 1 --oneline $v)"
+
+    # Timer
+    (
+        tput cuf 999
+        start=$(date +%s.%N)
+        while true; do
+            sleep 0.2
+            now=$(date +%s.%N)
+            dur=$(echo $start $now | awk '{dur=$2-$1; printf "%d:%02d", int(dur/60), int(dur%60)}')
+            tput cub ${#dur}
+            echo -n $dur
+        done
+    ) &
+    timerpid=$!
+
+    # Run command
+    logfile=log.$(git rev-parse --short HEAD)
+    if eval "$@" > $logfile; then
+        rm $logfile
+        res="PASS"; color=2
+    else
+        failed=`expr $failed + 1`
+        res="FAIL"; color=4
+    fi
+
+    # Stop timer
+    kill $timerpid
+    wait $timerpid 2>/dev/null
+    tput rc; tput el
+
+    # Report status
+    tput -S <<EOF
+cuf 999
+cub ${#res}
+bold
+setf $color
+EOF
+    echo $res
+    tput sgr0
 done
 
-if [ x"$failed" != x ]; then
-    echo >&2
-    echo >&2
-    echo "The following revisions failed:" >&2
-    echo "$failed" >&2
+if [ $failed != 0 ]; then
+    echo
+    echo "$failed commit(s) failed. Output saved in log.<hash>."
     exit 1
 fi
