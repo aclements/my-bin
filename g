@@ -55,10 +55,15 @@ while [[ -n $1 ]]; do
                     exit 1
                 fi
                 FINDPATH=$arg
-            else
+            elif [[ ${#FINDPREDS} == 0 ]]; then
                 FINDPREDS=($FINDPREDS -name $arg)
+            else
+                FINDPREDS=($FINDPREDS -o -name $arg)
             fi
         done
+        if [[ ${#FINDPREDS} != 0 ]]; then
+            FINDPREDS=(\( $FINDPREDS \))
+        fi
         break
     fi
     # Regular argument
