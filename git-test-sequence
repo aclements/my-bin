@@ -63,14 +63,14 @@ for v in `git rev-list --reverse $revlist`; do
 
     # Timer
     (
-        tput cuf 999
         start=$(date +%s.%N)
         while true; do
-            sleep 0.2
             now=$(date +%s.%N)
             dur=$(echo $start $now | awk '{dur=$2-$1; printf "%d:%02d", int(dur/60), int(dur%60)}')
+            tput cuf 999
             tput cub ${#dur}
             echo -n $dur
+            sleep 0.2
         done
     ) &
     timerpid=$!
