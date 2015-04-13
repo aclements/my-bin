@@ -82,7 +82,7 @@ for v in `git rev-list --reverse $revlist`; do
         res="PASS"; color=2
     else
         failed=`expr $failed + 1`
-        res="FAIL"; color=4
+        res="FAIL"; color=1
     fi
 
     # Stop timer
@@ -95,7 +95,7 @@ for v in `git rev-list --reverse $revlist`; do
 cuf 999
 cub ${#res}
 bold
-setf $color
+setaf $color
 EOF
     echo $res
     tput sgr0
