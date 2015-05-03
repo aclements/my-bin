@@ -41,6 +41,9 @@ cleanup() {
 }
 
 trap cleanup 0
+for trapno in INT HUP TERM; do
+    trap "cleanup; trap - 0 $trapno; kill -$trapno $$" $trapno
+done
 
 revlist="$1"
 shift
