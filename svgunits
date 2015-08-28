@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+
+import sys
+import re
+
+TO_PX = [('px', 1), ('pt', 1.25), ('pc', 15),
+         ('mm', 3.543307), ('cm', 35.43307), ('in', 90),
+         ('texpt', 0.3515 * 3.543307)]
+TO_PX_DICT = dict(TO_PX)
+
+def parse(length):
+    m = re.match(r'([0-9.]+)\s*([a-zA-Z]+)', length)
+    if not m:
+        print('Bad length %r' % length, file=sys.stderr)
+        sys.exit(1)
+    unit = m.group(2).lower()
+    factor = TO_PX_DICT.get(unit)
+    if factor is None:
+        print('Unknown unit in %r' % length, file=sys.stderr)
+        sys.exit(1)
+    return unit, float(m.group(1)) * factor
+
+def convert(px, omit=None):
+    return ' '.join('%g%s' % (px / factor, unit)
+                    for unit, factor in TO_PX
+                    if unit != omit)
+
+for length in sys.argv[1:]:
+    unit, px = parse(length)
+    print('%s is: %s' % (length, convert(px, unit)))

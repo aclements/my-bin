@@ -1,0 +1,45 @@
+#!/usr/bin/python
+
+import sys, os, re, subprocess, errno
+
+disas_re = re.compile(" *[0-9a-f]{6,}:\t")
+sym_re = re.compile("[0-9a-f]{6,} <.*>:\n")
+
+p = subprocess.Popen(["objdump", "-rSC", "--no-show-raw-insn"] + sys.argv[1:],
+                     stdout=subprocess.PIPE)
+
+def self_less():
+    import os, signal
+    if not os.isatty(1):
+        return
+    r, w = os.pipe()
+    if os.fork() > 0:
+        os.dup2(r, 0)
+        os.close(w)
+        # Make sure less doesn't exit when we do
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        try:
+            os.execlp("less", "less", "-FR")
+        except:
+            os.execlp("cat")
+    os.close(r)
+    os.dup2(w, 1)
+    os.close(w)
+    # Python ignores SIGPIPE by default, but we want to exit
+    # immediately when less exits, like a good UNIX process
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+self_less()
+
+while True:
+    line = p.stdout.readline()
+    if not line:
+        break
+    if disas_re.match(line):
+        pass
+#        line = "\x1b[36;1m" + line + "\x1b[0m"
+    elif sym_re.match(line):
+        line = "\x1b[32;1m" + line + "\x1b[0m"
+    else:
+        line = "\x1b[30;1m" + line + "\x1b[0m"
+    sys.stdout.write(line)

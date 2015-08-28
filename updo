@@ -1,0 +1,22 @@
+#!/bin/zsh
+
+set -e
+
+if [[ $1 == -1 ]]; then
+    shift
+    ONCE=t
+fi
+
+if [[ $# < 2 ]]; then
+    echo "Usage: $0 [-1] filename cmd..." >&2
+    exit 2
+fi
+
+F=$1
+shift
+
+if [[ -n $ONCE ]]; then
+    $* || true
+fi
+
+inotifywait -mq -e MODIFY $F | (while true; do read; $* || true; done)
