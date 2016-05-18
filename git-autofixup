@@ -1,0 +1,68 @@
+#!/bin/bash
+
+REPO=$(git rev-parse --show-toplevel)
+
+# XXX Sort commits by date
+
+# XXX If we added a single line in recent commit and now we're
+# updating it, this will fail because it will see both the commit of
+# that new line and the older lines around it.
+
+# Print the commit hashes of all lines around lines modified in the
+# index
+function get_commits() {
+    # Loop over files modified in the index
+    STAGED=$(git diff-index --name-only --cached HEAD)
+    if [[ ${#STAGED} == 0 ]]; then
+        return
+    fi
+    COMMITS=()
+    while read name; do
+        # Find modified region's line range in pre-image
+        lines=""
+        while read start count; do
+            end=$((start + count - 1))
+            lines="$lines -L $start,$end"
+        done < <(git diff -U1 --cached -- $REPO/$name | \
+            grep '^@@' | sed -re 's/@@ -([0-9]+),([0-9]+) .*/\1 \2/')
+
+        # Get commit hashes of blame in modified range.
+        git blame -l --incremental $lines -- "$REPO/$name" HEAD | \
+            grep -E '^[0-9a-f]{40} ' | cut -d' ' -f1
+    done <<< "$STAGED"
+}
+
+
+COMMITS=( $(for sha in $(get_commits | sort | uniq); do
+    git --no-pager log -1 --format=format:"%at %H%n" $sha
+done | sort -nr | cut -d' ' -f2) )
+
+# Check that we found exactly one commit
+if (( ${#COMMITS[@]} == 0 )); then
+    echo "no staged changes"
+    exit 1
+elif (( ${#COMMITS[@]} > 1 )); then
+    echo "staged changes touch multiple past commits:"
+    for commit in "${COMMITS[@]}"; do
+        git --no-pager log -1 --oneline $commit
+    done
+    exit 1
+fi
+
+# Squash/fixup/amend as appropriate
+if [[ $1 == --squash ]]; then
+    shift
+    echo "squashing with commit:"
+    ARGS=(--squash $COMMITS)
+elif [[ $1 != --fixup && "$(git rev-parse HEAD)" == $COMMITS ]]; then
+    echo "amending HEAD:"
+    ARGS=(--amend -C HEAD)
+else
+    if [[ $1 == --fixup ]]; then
+        shift
+    fi
+    echo "fixing up commit:"
+    ARGS=(--fixup $COMMITS)
+fi
+git --no-pager log -1 --oneline $COMMITS
+exec git commit ${ARGS[@]} "$@"
