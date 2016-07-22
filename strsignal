@@ -19,7 +19,7 @@ for name, num in signal.__dict__.iteritems():
 ns = []
 for arg in sys.argv[1:]:
     try:
-        n = int(arg)
+        n = int(arg, 0)
     except:
         try:
             n = nametonum[arg.upper().strip()]
