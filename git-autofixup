@@ -2,6 +2,11 @@
 
 REPO=$(git rev-parse --show-toplevel)
 
+sed='sed -r'                    # GNU-style extended regexp flag.
+if ! $sed q < /dev/null >/dev/null 2>&1; then
+    sed='sed -E'                # BSD-style extended regexp flag.
+fi
+
 # XXX Sort commits by date
 
 # XXX If we added a single line in recent commit and now we're
@@ -24,7 +29,7 @@ function get_commits() {
             end=$((start + count - 1))
             lines="$lines -L $start,$end"
         done < <(git diff -U1 --cached -- $REPO/$name | \
-            grep '^@@' | sed -re 's/@@ -([0-9]+),([0-9]+) .*/\1 \2/')
+            grep '^@@' | $sed -e 's/@@ -([0-9]+),([0-9]+) .*/\1 \2/')
 
         # Get commit hashes of blame in modified range.
         git blame -l --incremental $lines -- "$REPO/$name" HEAD | \
