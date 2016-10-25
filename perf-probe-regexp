@@ -1,0 +1,43 @@
+#!/bin/zsh
+
+if (( $# != 2 )); then
+    echo "usage: $0 binary regexp" >&2
+    echo >&2
+    echo "Create uprobes for all functions matching regexp in binary." >&2
+    exit 1
+fi
+
+BINARY=$(realpath $1)
+REGEXP=$2
+
+# Use the base of the binary name as the group, but strip any periods
+# since uprobes doesn't like them.
+group=probe_$(basename $1 | cut -d. -f1)
+
+# Writing to uprobe_events clears the current probes, so start with
+# the current probes and add to the list.
+probes="$(cat /sys/kernel/debug/tracing/uprobe_events)"
+
+# Find the PCs of functions matching REGEXP
+any=
+while read pc x symbol; do
+    any=t
+
+    # Translate PC into an ELF file offset
+    read elfoff < <(objdump -h $BINARY | awk '{size=strtonum("0x" $3); vma=strtonum("0x" $4); if (vma<=0x'$pc' && 0x'$pc'<vma+size) { printf("0x%x\n", 0x'$pc'-vma+strtonum("0x" $6)) }}')
+
+    # Derive the event name from the symbol, but replace periods with
+    # underscores because uprobes doesn't like periods.
+    event=$(echo $symbol | tr . _)
+
+    # Add uprobe command
+    probes="${probes}\np:$group/$event $BINARY:$elfoff"
+    echo "added event $group:$event for $symbol (on $elfoff)"
+done < <(nm $BINARY | awk -v re="$REGEXP" '($2 == "T" || $2 == "t") && $3 ~ re {print}')
+
+if [[ -z $any ]]; then
+    echo "no functions matched $REGEXP" >&2
+    exit
+fi
+
+echo "$probes" > /sys/kernel/debug/tracing/uprobe_events
