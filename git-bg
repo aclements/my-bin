@@ -1,0 +1,39 @@
+#!/bin/zsh
+
+# Clone this repository to a temporary location, including the index
+# and working copy diff, and run a command in the temporary clone.
+
+# TODO: Consider using git worktree.
+
+# TODO: Save command changes somehow? Maybe delete everything git
+# knows about at the end, but leave the directory if there's anything
+# else.
+
+set -e
+
+xrepo=$(mktemp -d --tmpdir git-bg.XXXXXXXXXX)
+
+# Mirror all heads and tags to the temporary repo. This includes
+# mirroring HEAD. However, it creates a bare repo.
+git clone --mirror -q $(git rev-parse --show-toplevel) "$xrepo"/.git
+TRAPEXIT() {
+    rm -rf "$xrepo"
+}
+# Convert the bare repo into a regular repo.
+git -C "$xrepo" config --local --bool core.bare false
+# Restore working copy at HEAD.
+git -C "$xrepo" reset --hard HEAD
+# Restore index.
+if ! git diff-index --quiet --cached HEAD --; then
+    git diff --cached --binary | git -C "$xrepo" apply --index
+fi
+# Restore working copy.
+if ! git diff --quiet; then
+    git diff --binary | git -C "$xrepo" apply
+fi
+# Restore relative directory.
+cd "$xrepo"/$(TRAPEXIT(){}; git rev-parse --show-prefix)
+
+# Run the command.
+echo "Running $* in $PWD" >&2
+$*
