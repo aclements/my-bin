@@ -1,5 +1,9 @@
 #!/usr/bin/python
 
+# */15 *   *   *   *   get-mbta nextbus >> ~/.get-mbta.log
+# */15 *   *   *   *   get-mbta massdot >> ~/.get-mbta.log
+# 0    4   *   *   *   get-mbta clean >> ~/.get-mbta.log
+
 import sys
 import os
 import fcntl
@@ -74,38 +78,22 @@ def do_nextbus():
 
         sync_to_minute()
 
-MASSDOT_SUBWAY = "http://developer.mbta.com/lib/rthr/%s.json"
-MASSDOT_TRIPS = "http://developer.mbta.com/lib/gtrtfs/Passages.pb"
-MASSDOT_GPS = "http://developer.mbta.com/lib/gtrtfs/Vehicles.pb"
-MASSDOT_GTFS = "http://www.mbta.com/uploadedfiles/MBTA_GTFS.zip"
+MASSDOT_TRIPS = "https://cdn.mbta.com/realtime/TripUpdates.pb"
+MASSDOT_GPS = "https://cdn.mbta.com/realtime/VehiclePositions.pb"
+MASSDOT_GTFS = "https://cdn.mbta.com/MBTA_GTFS.zip"
 
 def do_massdot():
-    # See http://www.mbta.com/uploadedfiles/Description.pdf for subway
-    # data format.
+    # See https://www.mbta.com/developers/gtfs
 
     # Limits:
     # * Polling commands are limited to once every 10 seconds
-    fourohfours = 0
     while True:
         destDir, metaDir, pathBase = make_day_dir()
 
-        # Subway data in JSON format
-        for line in ["red", "orange", "blue"]:
-            path = os.path.join(
-                destDir, pathBase + "-gps-massdot-" + line + ".json")
-            try:
-                fetch(MASSDOT_SUBWAY % line, path, "massdot")
-            except urllib2.HTTPError as e:
-                # For whatever reason, these files often go
-                # missing (and stay missing over fetch's retry).
-                if e.code == 404 and fourohfours < 3:
-                    fourohfours += 1
-                else:
-                    raise
-            else:
-                fourohfours = 0
-
-        # GTFS-realtime data for buses
+        # GTFS-realtime data for buses and subway
+        #
+        # TODO: Trips data is large and probably changes slowly.
+        # Use the "incremental" feed for most fetches.
         for url, part in [(MASSDOT_GPS, "gps"), (MASSDOT_TRIPS, "trips")]:
             fetch(url,
                   os.path.join(destDir, pathBase + "-%s-massdot-bus.pb" % part),
