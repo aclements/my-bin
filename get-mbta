@@ -1,0 +1,231 @@
+#!/usr/bin/python
+
+import sys
+import os
+import fcntl
+import errno
+import time
+import urllib2
+import xml.etree.cElementTree as ET
+import glob
+import filecmp
+import shutil
+import socket
+
+DATA_DIR = os.path.expanduser("~/etc/mbta")
+
+def main():
+    source = sys.argv[1]
+    if source not in SOURCES:
+        print >> sys.stderr, "Unknown source %r" % sys.argv[1]
+        sys.exit(2)
+
+    # Ensure process uniqueness
+    lockFile = open(os.path.join(DATA_DIR, ".lock." + source), "w")
+    try:
+        fcntl.lockf(lockFile, fcntl.LOCK_EX | fcntl.LOCK_NB, 1)
+    except IOError as e:
+        if e.errno == errno.EACCES or e.errno == errno.EAGAIN:
+            # Already running
+            sys.exit(0)
+
+    SOURCES[source]()
+
+NEXTBUS_BASE = "http://webservices.nextbus.com/service/publicXMLFeed"
+NEXTBUS_ROUTE_LIST = NEXTBUS_BASE + "?command=routeList&a=mbta"
+NEXTBUS_ROUTE_CONFIG = NEXTBUS_BASE + "?command=routeConfig&a=mbta&r=%s&verbose"
+NEXTBUS_GPS = NEXTBUS_BASE + "?command=vehicleLocations&a=mbta&t=0"
+
+def do_nextbus():
+    # Based on http://www.nextbus.com/xmlFeedDocs/NextBusXMLFeed.pdf
+
+    # Limits:
+    # * Polling commands are limited to once every 10 seconds; overall
+    #   data rate to 2MB/20sec
+    while True:
+        destDir, metaDir, pathBase = make_day_dir()
+
+        # Fetch vehicle location data.  We could request only changes
+        # since the last update, but the buses generally update more
+        # than once per minute, so there's no benefit.
+        gpsPath = os.path.join(destDir, pathBase + "-gps-nextbus.xml")
+        fetch(NEXTBUS_GPS, gpsPath, "nextbus")
+
+        # Fetch route data once per day.  We fetch at most one file of
+        # this per loop so as not to interfere with GPS data fetching.
+        # XXX This is a bit large and doesn't change much; deduplicate?
+        routeListPath = os.path.join(metaDir, "nextbus-routelist.xml")
+        if not os.path.exists(routeListPath):
+            fetch(NEXTBUS_ROUTE_LIST, routeListPath, "nextbus")
+            dedup(routeListPath)
+        else:
+            # Fetch route configuration.  Unfortunately, since there
+            # are >100 routes, we have to fetch these one at a time
+            # (this seems like a false economy for NextBus).
+            et = ET.parse(routeListPath)
+            for elt in et.findall("route"):
+                tag = elt.attrib["tag"]
+                routeConfigPath = os.path.join(
+                    metaDir, "nextbus-route-%s.xml" % tag)
+                if not os.path.exists(routeConfigPath):
+                    fetch(NEXTBUS_ROUTE_CONFIG % tag, routeConfigPath, "nextbus")
+                    dedup(routeConfigPath)
+                    break
+
+        sync_to_minute()
+
+MASSDOT_SUBWAY = "http://developer.mbta.com/lib/rthr/%s.json"
+MASSDOT_TRIPS = "http://developer.mbta.com/lib/gtrtfs/Passages.pb"
+MASSDOT_GPS = "http://developer.mbta.com/lib/gtrtfs/Vehicles.pb"
+MASSDOT_GTFS = "http://www.mbta.com/uploadedfiles/MBTA_GTFS.zip"
+
+def do_massdot():
+    # See http://www.mbta.com/uploadedfiles/Description.pdf for subway
+    # data format.
+
+    # Limits:
+    # * Polling commands are limited to once every 10 seconds
+    fourohfours = 0
+    while True:
+        destDir, metaDir, pathBase = make_day_dir()
+
+        # Subway data in JSON format
+        for line in ["red", "orange", "blue"]:
+            path = os.path.join(
+                destDir, pathBase + "-gps-massdot-" + line + ".json")
+            try:
+                fetch(MASSDOT_SUBWAY % line, path, "massdot")
+            except urllib2.HTTPError as e:
+                # For whatever reason, these files often go
+                # missing (and stay missing over fetch's retry).
+                if e.code == 404 and fourohfours < 3:
+                    fourohfours += 1
+                else:
+                    raise
+            else:
+                fourohfours = 0
+
+        # GTFS-realtime data for buses
+        for url, part in [(MASSDOT_GPS, "gps"), (MASSDOT_TRIPS, "trips")]:
+            fetch(url,
+                  os.path.join(destDir, pathBase + "-%s-massdot-bus.pb" % part),
+                  "massdot")
+
+        # Get GTFS route data once per day at 4AM (when there's no
+        # other activity).
+        if time.localtime().tm_hour >= 4:
+            # XXX This is quite large (25M) and rarely changes.  Dedup?
+            gtfsPath = os.path.join(metaDir, "gtfs.zip")
+            if not os.path.exists(gtfsPath):
+                fetch(MASSDOT_GTFS, gtfsPath, "massdot")
+                dedup(gtfsPath)
+
+        sync_to_minute()
+
+def do_clean():
+    # Compress all data directories before today
+    dirs = sorted(d for d in os.listdir(DATA_DIR)
+                  if os.path.isdir(os.path.join(DATA_DIR, d)) and d.isdigit())
+    today = time.strftime("%Y%m%d")
+    for dir in dirs:
+        if dir == today:
+            break
+        log("Compressing", dir)
+        shutil.make_archive(os.path.join(DATA_DIR, dir), "bztar",
+                            DATA_DIR, os.path.join(DATA_DIR, dir))
+        shutil.rmtree(os.path.join(DATA_DIR, dir))
+
+SOURCES = {"nextbus": do_nextbus,
+           "massdot": do_massdot,
+           # Not really a source
+           "clean": do_clean}
+
+def log(*args):
+    print "[%s] %s" % (time.strftime("%Y-%m-%dT%H:%M:%S"),
+                       " ".join(map(str, args)))
+    sys.stdout.flush()
+
+def make_day_dir():
+    now = time.localtime()
+    destDir = os.path.join(DATA_DIR, time.strftime("%Y%m%d", now))
+    makedirs(destDir)
+    metaDir = os.path.join(DATA_DIR, time.strftime("%Y%m%d-meta", now))
+    makedirs(metaDir)
+    return destDir, metaDir, time.strftime("%H%M%S", now)
+
+def makedirs(path):
+    try:
+        os.makedirs(path)
+    except EnvironmentError as e:
+        if e.errno != errno.EEXIST:
+            raise
+
+def sync_to_minute():
+    # Sync to next minute boundary
+    target = (int(time.time()) + 59) / 60 * 60
+    while time.time() < target:
+        time.sleep(target - time.time())
+
+def fetch(url, dest, mode):
+    # XXX Request compression
+    log("Fetching", url)
+    for retries in range(3)[::-1]:
+        try:
+            d = urllib2.urlopen(url, timeout=20)
+            data = d.read()
+            d.close()
+            break
+        except IOError as e:
+            if retries == 0:
+                log("Aborting (%s)" % e)
+                raise
+            time.sleep(2)
+            log("Retrying (%s)" % e)
+
+    if mode == "nextbus":
+        # Check for error responses
+        et = ET.fromstring(data)
+        err = et.find("Error")
+        if err is not None:
+            print >> sys.stderr, "NextBus error:"
+            print >> sys.stderr, data
+            if err.attrib["shouldRetry"] == "true":
+                return
+            raise RuntimeError("Request permanently rejected")
+
+    open(dest + ".tmp", "w").write(data)
+    os.rename(dest + ".tmp", dest)
+
+    if mode == "nextbus":
+        # Enforce NextBus/MassDOT limits (and then some)
+        time.sleep(20)
+    elif mode == "massdot":
+        # MassDOT's data is spread across five files, so we need to
+        # run closer to the rate limit.  Too bad.
+        time.sleep(10)
+
+def dedup(path):
+    # Deduplicate path against the same path from earlier metadata
+    # directories
+    if not os.path.exists(path):
+        return
+    pathBase = os.path.basename(path)
+    metas = sorted(glob.glob(os.path.join(DATA_DIR, "*-meta", pathBase)),
+                   reverse=True)
+    while metas and metas[0] != path:
+        metas.pop(0)
+    if len(metas) < 2:
+        return
+    cmpPath = metas[1]
+    if filecmp.cmp(path, cmpPath, False):
+        while os.path.islink(cmpPath):
+            cmpPath = os.path.normpath(os.path.join(os.path.dirname(cmpPath),
+                                                    os.readlink(cmpPath)))
+        assert os.path.exists(cmpPath)
+        cmpPath = os.path.relpath(cmpPath, os.path.dirname(path))
+        log("Deduplicating", path, "against", cmpPath)
+        os.symlink(cmpPath, path + ".tmp")
+        os.rename(path + ".tmp", path)
+
+if __name__ == "__main__":
+    main()
