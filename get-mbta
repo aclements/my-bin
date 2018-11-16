@@ -78,6 +78,7 @@ def do_nextbus():
 
 MASSDOT_TRIPS = "https://cdn.mbta.com/realtime/TripUpdates.pb"
 MASSDOT_GPS = "https://cdn.mbta.com/realtime/VehiclePositions.pb"
+MASSDOT_ALERTS = "https://cdn.mbta.com/realtime/Alerts.pb"
 MASSDOT_GTFS = "https://cdn.mbta.com/MBTA_GTFS.zip"
 
 def do_massdot():
@@ -95,7 +96,9 @@ def do_massdot():
         #
         # TODO: They've moved this before. Detect if we start getting
         # HTML and complain.
-        for url, part in [(MASSDOT_GPS, "gps"), (MASSDOT_TRIPS, "trips")]:
+        for url, part in [(MASSDOT_GPS, "gps"),
+                          (MASSDOT_TRIPS, "trips"),
+                          (MASSDOT_ALERTS, "alerts")]:
             fetch(url,
                   os.path.join(destDir, pathBase + "-%s-massdot-bus.pb" % part),
                   "massdot")
