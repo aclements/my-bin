@@ -5,12 +5,12 @@ set -e
 export AUTOSSH_PATH=`which ssh`
 
 if which mosh > /dev/null 2>&1; then
-    mosh -- awkjr sh -c "TERM=rxvt-256color screen -x"
+    mosh -- awk sh -c "TERM=rxvt-256color screen -x"
 elif which autossh > /dev/null 2>&1; then
     # I don't know why the sleep 1 is necessary, but without the
     # delay, the other side just freezes up
-    autossh -M 0 -t awkjr "sleep 1 && TERM=rxvt-256color screen -x"
+    autossh -M 0 -t awk "sleep 1 && TERM=rxvt-256color screen -x"
 else
     # rxvt-unicode-256color is *too long* for screen.
-    ssh -t awkjr "TERM=rxvt-256color screen -x"
+    ssh -t awk "TERM=rxvt-256color screen -x"
 fi
