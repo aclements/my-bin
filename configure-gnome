@@ -1,0 +1,22 @@
+#!/bin/zsh
+
+set -e
+
+# Workspace bindings
+# https://unix.stackexchange.com/questions/677878/supernumber-key-combos-remapping-in-gnome-40-switch-workspaces-instead-of-laun
+for i in {1..9}; do 
+    # Clear default "switch to application" bindings
+    gsettings set "org.gnome.shell.keybindings" "switch-to-application-$i" "[]"
+    # Set switch to workspace and move to workspace
+    gsettings set "org.gnome.desktop.wm.keybindings" "switch-to-workspace-$i" "['<Super>${i}']"
+    gsettings set "org.gnome.desktop.wm.keybindings" "move-to-workspace-$i" "['<Super><Shift>${i}']"
+done
+
+gsettings set "org.gnome.desktop.wm.keybindings" "maximize-vertically" "['<Super>space']"
+
+# Custom keybindings Note that this will clobber any existing custom
+# bindings. It's not easy to just add one.
+gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/']"
+gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ name 'Terminal'
+gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ command 'gnome-terminal'
+gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ binding '<Super>Return'
