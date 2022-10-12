@@ -11,8 +11,18 @@ for i in {1..9}; do
     gsettings set "org.gnome.desktop.wm.keybindings" "switch-to-workspace-$i" "['<Super>${i}']"
     gsettings set "org.gnome.desktop.wm.keybindings" "move-to-workspace-$i" "['<Super><Shift>${i}']"
 done
+gsettings set "org.gnome.mutter" "workspaces-only-on-primary" false
 
 gsettings set "org.gnome.desktop.wm.keybindings" "maximize-vertically" "['<Super>space']"
+
+# Default monospace font
+gsettings set org.gnome.desktop.interface monospace-font-name "'Source Code Pro 9'"
+
+# Terminal font (this works, but it's easier to use the system default)
+# prof=$(gsettings get org.gnome.Terminal.ProfilesList default)
+# prof=${prof:1:-1}  # Strip leading and trailing '
+# gsettings set org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$prof/ font "'Source Code Pro 9'"
+# gsettings set org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$prof/ use-system-font false
 
 # Custom keybindings Note that this will clobber any existing custom
 # bindings. It's not easy to just add one.
