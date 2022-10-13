@@ -2,31 +2,73 @@
 
 set -e
 
-# Workspace bindings
-# https://unix.stackexchange.com/questions/677878/supernumber-key-combos-remapping-in-gnome-40-switch-workspaces-instead-of-laun
-for i in {1..9}; do 
-    # Clear default "switch to application" bindings
-    gsettings set "org.gnome.shell.keybindings" "switch-to-application-$i" "[]"
-    # Set switch to workspace and move to workspace
-    gsettings set "org.gnome.desktop.wm.keybindings" "switch-to-workspace-$i" "['<Super>${i}']"
-    gsettings set "org.gnome.desktop.wm.keybindings" "move-to-workspace-$i" "['<Super><Shift>${i}']"
-done
-gsettings set "org.gnome.mutter" "workspaces-only-on-primary" false
+mode=
+if [[ $# == 0 ]]; then
+    mode=check
+elif [[ $# == 1 && $1 == apply ]]; then
+    mode=apply
+else
+    echo "bad usage"
+    exit 2
+fi
 
-gsettings set "org.gnome.desktop.wm.keybindings" "maximize-vertically" "['<Super>space']"
+function gset() {
+    if [[ $mode == apply ]]; then
+        gsettings set $1 $2 $3
+        return
+    fi
+
+    cur=$(gsettings get $1 $2)
+    if [[ $cur == "@as []" ]]; then
+        # This means "array of strings" to disambiguate.
+        cur="[]"
+    fi
+    if [[ $cur != $3 ]]; then
+        echo $1 $2
+        echo Current: $cur
+        echo New: $3
+    fi
+}
+
+# Tap to click
+gset org.gnome.desktop.peripherals.touchpad tap-to-click true
+
+# Focus follows mouse
+gset org.gnome.desktop.wm.preferences focus-mode "'sloppy'"
+
+# Dark mode
+gset org.gnome.desktop.interface color-scheme "'prefer-dark'"
 
 # Default monospace font
-gsettings set org.gnome.desktop.interface monospace-font-name "'Source Code Pro 9'"
+gset org.gnome.desktop.interface monospace-font-name "'Source Code Pro 9'"
 
 # Terminal font (this works, but it's easier to use the system default)
 # prof=$(gsettings get org.gnome.Terminal.ProfilesList default)
 # prof=${prof:1:-1}  # Strip leading and trailing '
-# gsettings set org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$prof/ font "'Source Code Pro 9'"
-# gsettings set org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$prof/ use-system-font false
+# gset org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$prof/ font "'Source Code Pro 9'"
+# gset org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$prof/ use-system-font false
 
-# Custom keybindings Note that this will clobber any existing custom
-# bindings. It's not easy to just add one.
-gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/']"
-gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ name 'Terminal'
-gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ command 'gnome-terminal'
-gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ binding '<Super>Return'
+# Workspace key bindings
+# https://unix.stackexchange.com/questions/677878/supernumber-key-combos-remapping-in-gnome-40-switch-workspaces-instead-of-laun
+for i in {1..9}; do 
+    # Clear default "switch to application" bindings
+    gset "org.gnome.shell.keybindings" "switch-to-application-$i" "[]"
+    # Set switch to workspace and move to workspace
+    gset "org.gnome.desktop.wm.keybindings" "switch-to-workspace-$i" "['<Super>${i}']"
+    gset "org.gnome.desktop.wm.keybindings" "move-to-workspace-$i" "['<Super><Shift>${i}']"
+done
+gset "org.gnome.mutter" "workspaces-only-on-primary" false
+
+# Other key bindings
+gset "org.gnome.desktop.wm.keybindings" "maximize-vertically" "['<Super>space']"
+
+# Custom keybindings. Note that this will clobber any existing custom
+# bindings. It's not easy to just add or check for one.
+gset org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/']"
+gset org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ name "'Terminal'"
+gset org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ command "'gnome-terminal'"
+gset org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ binding "'<Super>Return'"
+
+if [[ $mode == check ]]; then
+    echo "Use '$0 apply' to apply these changes"
+fi
