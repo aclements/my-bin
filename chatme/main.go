@@ -24,21 +24,35 @@ import (
 // send a chat message.
 const minTime = 10 * time.Second
 
+var (
+	flagNote    = flag.String("note", "", "add `note` to message")
+	flagMessage = flag.String("message", "", "send message `text` instead of running a command")
+)
+
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "usage: chatme command...\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "usage: chatme [flags] {command... | -message message}\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
-	if flag.NArg() == 0 {
-		flag.Usage()
-		os.Exit(2)
-	}
-	command := flag.Args()
 
 	// Load configuration.
 	config := loadConfig()
 
+	switch {
+	default:
+		flag.Usage()
+		os.Exit(2)
+
+	case *flagMessage == "" && flag.NArg() > 0:
+		runCommand(flag.Args())
+
+	case *flagMessage != "" && flag.NArg() == 0:
+		sendChat(config.webhookUrl, *flagMessage)
+	}
+}
+
+func runCommand(command []string) {
 	// Run command.
 	startTime := time.Now()
 	cmd := exec.Command(command[0], command[1:]...)
@@ -64,6 +78,9 @@ func main() {
 	}
 
 	// Build chat message.
+	//
+	// TODO: Add standard metadata: working directory, git
+	// describe (with the + thing), host.
 	var msg string
 	cmdline := shQuote(command)
 	if limit := 100; len(cmdline) > limit {
@@ -73,6 +90,9 @@ func main() {
 		msg = fmt.Sprintf("Success: `%s`", cmdline)
 	} else {
 		msg = fmt.Sprintf("%s: `%s`", res.ProcessState, cmdline)
+	}
+	if *flagNote != "" {
+		msg += "\n" + *flagNote
 	}
 
 	// Send chat message.
