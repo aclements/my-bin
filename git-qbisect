@@ -1,0 +1,38 @@
+#!/bin/sh
+
+if [[ $# == 0 ]]; then
+    echo "git qbisect [--from <rev>] [--setup <setup>] <cmd>...
+
+Quick bisect. Bisect the branch from <rev> or @{upstream} by running <cmd> in
+the current directory. Find the first commit on which <cmd> fails.
+
+If <setup> is provided, run this command before <cmd> and if it fails,
+skip the revision." >&2
+    exit 2
+fi
+
+set -e
+
+FROM=
+SETUP=true
+while true; do
+    if [[ "x$1" == x--from ]]; then
+        FROM="$2"
+        shift 2
+    elif [[ "x$1" == x--setup ]]; then
+        SETUP="$2"
+        shift 2
+    else
+        break
+    fi
+done
+if [[ "x$FROM" == x ]]; then
+    FROM=$(git merge-base HEAD @{u})
+fi
+
+WD="$PWD"
+# git-bisect refuses to run from any directory that isn't the repo
+# root. We'll cd back to $PWD in the bisect run.
+cd $(git rev-parse --show-toplevel)
+git bisect start HEAD "$FROM"
+exec git bisect run sh -c 'cd $1 && if ! $2; then exit 125; fi && shift 2 && exec "$@"' "" "$WD" "$SETUP" "$@"
