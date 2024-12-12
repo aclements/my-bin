@@ -1,0 +1,11 @@
+# systemctl --user enable ./brightness.service
+# systemctl --user start brightness.service
+
+[Unit]
+Description=Monitor brightness daemon
+
+[Service]
+ExecStart=%Y/brightness
+
+[Install]
+WantedBy=default.target
