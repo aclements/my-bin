@@ -2,73 +2,179 @@
 
 set -e
 
-mode=
-if [[ $# == 0 ]]; then
-    mode=check
-elif [[ $# == 1 && $1 == apply ]]; then
-    mode=apply
-else
-    echo "bad usage"
-    exit 2
-fi
+WM=paperwm # gnome or paperwm
+
+doCats=()
+mode=check
+while (( $# )); do
+    if [[ $1 == --check ]]; then
+        mode=check
+    elif [[ $1 == --apply ]]; then
+        mode=apply
+    elif [[ $1 == --list ]]; then
+        mode=list
+    elif [[ $1 == -* ]]; then
+        echo "bad usage"
+        exit 2
+    else
+        doCats=($doCats $1)
+    fi
+    shift
+done
+
+function logDo() {
+    if [[ $mode == apply ]]; then
+        echo "$1"
+        shift
+        $*
+    else
+        echo "$1 (dry run)"
+    fi
+}
 
 function gset() {
-    if [[ $mode == apply ]]; then
-        gsettings set $1 $2 $3
-        return
-    fi
+    while (( $# )); do
+        if [[ $1 == "--extension" ]]; then
+            export GSETTINGS_SCHEMA_DIR=$HOME/.local/share/gnome-shell/extensions/$2/schemas
+            shift 2
+        elif [[ $1 == -* ]]; then
+            2>&1 echo "unknown flag $1"
+            exit 1
+        else
+            break
+        fi
+    done
+    schema=$1
+    shift
+    while (( $# )); do
+        gset1 $schema $1 $2
+        shift 2
+    done
+    unset GSETTINGS_SCHEMA_DIR
+}
 
+function gset1() {
     cur=$(gsettings get $1 $2)
     if [[ $cur == "@as []" ]]; then
         # This means "array of strings" to disambiguate.
         cur="[]"
     fi
-    if [[ $cur != $3 ]]; then
+    default=$(XDG_CONFIG_HOME=/nonexistent gsettings get $1 $2)
+    if [[ $default == "@as []" ]]; then
+        default="[]"
+    fi
+
+    if [[ $cur != $3 || $mode == list ]]; then
         echo $1 $2
-        echo Current: $cur
-        echo New: $3
+        echo "  Default:" $default
+        echo "  Current:" $cur
+        echo "  New:    " $3
+    fi
+    if [[ $mode == apply && $cur != $3 ]]; then
+        gsettings set $1 $2 $3
     fi
 }
 
-# Tap to click
-gset org.gnome.desktop.peripherals.touchpad tap-to-click true
+function installExtension() {
+    id=$1
+    if ! gnome-extensions info $id >&/dev/null; then
+        # Install extension
+        logDo "Installing $id" busctl --user call org.gnome.Shell.Extensions /org/gnome/Shell/Extensions org.gnome.Shell.Extensions InstallRemoteExtension s $id
+    fi
+    if ! gnome-extensions info -q $id | grep -q 'Enabled: Yes'; then
+        logDo "Enabling $id" gnome-extensions enable $id
+    else
+        echo "Extension $id already enabled"
+    fi
+}
 
-# Focus follows mouse
-gset org.gnome.desktop.wm.preferences focus-mode "'sloppy'"
+cats=()
 
-# Dark mode
-gset org.gnome.desktop.interface color-scheme "'prefer-dark'"
+viewSet() {
+    # Dark mode
+    gset org.gnome.desktop.interface color-scheme "'prefer-dark'"
 
-# Default monospace font
-gset org.gnome.desktop.interface monospace-font-name "'Source Code Pro 9'"
+    # Switch workspaces on all displays
+    gset org.gnome.mutter "workspaces-only-on-primary" false
 
-# Terminal font (this works, but it's easier to use the system default)
-# prof=$(gsettings get org.gnome.Terminal.ProfilesList default)
-# prof=${prof:1:-1}  # Strip leading and trailing '
-# gset org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$prof/ font "'Source Code Pro 9'"
-# gset org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$prof/ use-system-font false
+    # Default monospace font
+    gset org.gnome.desktop.interface monospace-font-name "'Source Code Pro 9'"
 
-# Workspace key bindings
-# https://unix.stackexchange.com/questions/677878/supernumber-key-combos-remapping-in-gnome-40-switch-workspaces-instead-of-laun
-for i in {1..9}; do 
-    # Clear default "switch to application" bindings
-    gset "org.gnome.shell.keybindings" "switch-to-application-$i" "[]"
-    # Set switch to workspace and move to workspace
-    gset "org.gnome.desktop.wm.keybindings" "switch-to-workspace-$i" "['<Super>${i}']"
-    gset "org.gnome.desktop.wm.keybindings" "move-to-workspace-$i" "['<Super><Shift>${i}']"
+    # Terminal font (this works, but it's easier to use the system default)
+    # prof=$(gsettings get org.gnome.Terminal.ProfilesList default)
+    # prof=${prof:1:-1}  # Strip leading and trailing '
+    # gset org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$prof/ font "'Source Code Pro 9'"
+    # gset org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$prof/ use-system-font false
+}
+cats=($cats view)
+
+inputSet() {
+    # Tap to click
+    gset org.gnome.desktop.peripherals.touchpad tap-to-click true
+
+    if [[ $WM == paperwm ]]; then
+        # Click to focus because PaperWM interacts poorly with sloppy focus
+        gset org.gnome.desktop.wm.preferences focus-mode "'click'"
+    else
+        # Focus follows mouse
+        gset org.gnome.desktop.wm.preferences focus-mode "'sloppy'"
+    fi
+}
+cats=($cats input)
+
+keysSet() {
+    # Workspace key bindings
+    # https://unix.stackexchange.com/questions/677878/supernumber-key-combos-remapping-in-gnome-40-switch-workspaces-instead-of-laun
+    for i in {1..9}; do
+        # Clear default "switch to application" bindings
+        gset org.gnome.shell.keybindings switch-to-application-$i "[]"
+        # Set switch to workspace and move to workspace
+        gset org.gnome.desktop.wm.keybindings \
+             switch-to-workspace-$i "['<Super>${i}']" \
+             move-to-workspace-$i "['<Super><Shift>${i}']"
+    done
+
+    # Other key bindings
+    gset org.gnome.desktop.wm.keybindings maximize-vertically "['<Super>space']"
+
+    # Custom keybindings. Note that this will clobber any existing custom
+    # bindings. It's not easy to just add or check for one.
+    gset org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/']"
+    gset org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ \
+         name "'Terminal'" \
+         command "'gnome-terminal'" \
+         binding "'<Super>Return'"
+}
+cats=($cats keys)
+
+notificationsSet() {
+    # Make notifications appear in the bottom right and slide up from
+    # the bottom.
+    local ID=notification-banner-reloaded@marcinjakubowski.github.com
+    installExtension $ID
+    gset --extension $ID org.gnome.shell.extensions.notification-banner-reloaded \
+         anchor-horizontal 1 \
+         anchor-vertical 1 \
+         animation-direction 3
+}
+cats=($cats notifications)
+
+if [[ ${#doCats} == 0 ]]; then
+    2>&1 echo "Usage: $0 {--check|--list|--apply} <categories...>"
+    2>&1 echo
+    2>&1 echo "Categories: all $cats"
+    exit
+fi
+for doCat in $doCats; do
+    if [[ $doCat == all ]]; then
+        for doCat in $cats; do
+            ${doCat}Set
+        done
+    else
+        ${doCat}Set
+    fi
 done
-gset "org.gnome.mutter" "workspaces-only-on-primary" false
-
-# Other key bindings
-gset "org.gnome.desktop.wm.keybindings" "maximize-vertically" "['<Super>space']"
-
-# Custom keybindings. Note that this will clobber any existing custom
-# bindings. It's not easy to just add or check for one.
-gset org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/']"
-gset org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ name "'Terminal'"
-gset org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ command "'gnome-terminal'"
-gset org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ binding "'<Super>Return'"
 
 if [[ $mode == check ]]; then
-    echo "Use '$0 apply' to apply these changes"
+    echo "Use '$0 --apply' to apply these changes"
 fi
