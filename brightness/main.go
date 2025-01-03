@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -11,12 +12,32 @@ import (
 	"github.com/sixdouglas/suncalc"
 )
 
+var (
+	flagList   = flag.Bool("list", false, "list brightness throughout today and exit")
+	flagV      = flag.Bool("v", false, "verbose logging")
+	flagDryRun = flag.Bool("dry-run", false, "don't change brightness; implies -v")
+)
+
 const updatePeriod = 5 * time.Minute
 const fadeDuration = time.Hour
 const latitude = 42.3601
 const longitude = -71.0589
 
 func main() {
+	flag.Parse()
+	if flag.NArg() != 0 {
+		flag.Usage()
+		os.Exit(2)
+	}
+	if *flagDryRun {
+		*flagV = true
+	}
+
+	if *flagList {
+		listToday()
+		return
+	}
+
 	var lastBrightness float64 = -1
 	plugAndPlay, err := monitorMonitor()
 	if err != nil {
@@ -24,6 +45,9 @@ func main() {
 	}
 	for {
 		b := getBrightness(time.Now())
+		if *flagV {
+			log.Printf("desired brightness: %v", b)
+		}
 		if b != lastBrightness {
 			lastBrightness = b
 			scaled := b*(0.5-0.1) + 0.1
@@ -31,7 +55,13 @@ func main() {
 		}
 		select {
 		case <-plugAndPlay:
+			if *flagV {
+				log.Println("got monitor plug event")
+			}
 		case <-time.After(updatePeriod):
+			if *flagV {
+				log.Printf("updating after %s", updatePeriod)
+			}
 		}
 	}
 }
@@ -108,8 +138,9 @@ func debounce[T any](ch <-chan T, delay time.Duration) <-chan T {
 }
 
 func listToday() {
-	y, m, d := time.Now().Date()
-	start := time.Date(y, m, d, 0, 0, 0, 0, time.Local)
+	now := time.Now()
+	y, m, d := now.Date()
+	start := time.Date(y, m, d, 0, 0, 0, 0, now.Location())
 	for dt := time.Duration(0); dt < 24*time.Hour; dt += 20 * time.Minute {
 		t := start.Add(dt)
 		fmt.Printf("%s %g\n", t, getBrightness(t))
@@ -118,6 +149,9 @@ func listToday() {
 
 func getBrightness(now time.Time) float64 {
 	times := suncalc.GetTimes(now, latitude, longitude)
+	if *flagV {
+		log.Printf("calculating brightness for %s: sunrise %s, sunset %s", now, times[suncalc.Sunrise], times[suncalc.Sunset])
+	}
 
 	if now.Before(times[suncalc.Sunrise].Value) {
 		return 0
@@ -134,7 +168,7 @@ func getBrightness(now time.Time) float64 {
 	}
 
 	if now.Before(times[suncalc.Sunset].Value) {
-		return float64(now.Sub(dim)) / float64(fadeDuration)
+		return 1 - float64(now.Sub(dim))/float64(fadeDuration)
 	}
 
 	return 0
@@ -145,6 +179,11 @@ func setBrightness(val float64) {
 	// value is between 0 and 100.
 	v := fmt.Sprint(int(val * 100))
 	cmd := exec.Command("ddcutil", "setvcp", "--sn", "112NTYTJB258", "0x10", v)
+	if *flagDryRun {
+		log.Printf("would run: %s", cmd)
+		return
+	}
+
 	out, err := cmd.CombinedOutput()
 	if err == nil || string(out) == "Display not found\n" {
 		return

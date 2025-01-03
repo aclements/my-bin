@@ -1,6 +1,9 @@
 # systemctl --user enable ./brightness.service
 # systemctl --user start brightness.service
 
+# To update:
+# go build && systemctl --user restart brightness.service
+
 [Unit]
 Description=Monitor brightness daemon
 
