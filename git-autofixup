@@ -9,9 +9,13 @@ fi
 
 # XXX Sort commits by date
 
-# XXX If we added a single line in recent commit and now we're
-# updating it, this will fail because it will see both the commit of
-# that new line and the older lines around it.
+# XXX Consider adding an argument that gives a commit range to consider
+# amending. By default that could even be @{u}..
+
+# XXX If we added a single line in recent commit and now we're updating it, this
+# will fail because it will see both the commit of that new line and the older
+# lines around it. Maybe if a hunk has deleted lines that are all from the same
+# commit (especially if they're all next to the added lines), we just use that?
 
 # Print the commit hashes of all lines around lines modified in the
 # index
@@ -23,13 +27,22 @@ function get_commits() {
     fi
     COMMITS=()
     while read name; do
-        # Find modified region's line range in pre-image
-        lines=""
-        while read start count; do
-            end=$((start + count - 1))
-            lines="$lines -L $start,$end"
-        done < <(git diff -U1 --cached -- $REPO/$name | \
-            grep '^@@' | $sed -e 's/@@ -([0-9]+),([0-9]+) .*/\1 \2/')
+        # Find modified region's line range in pre-image. Passing -U1
+        # gives us 1 line before and after the modified hunk, which is
+        # necessary context if it's an insertion-only hunk. Construct
+        # the -L arguments to git blame, which are inclusive line
+        # ranges. Completely new files will have a "-0,0" block, so we
+        # ignore those.
+        lines=$(git diff -U1 --cached -- $REPO/$name |
+                    gawk 'match($0, /^@@ -([0-9]+)(,([0-9]+))?/, ary) && ary[1] > 0 {
+                     start=ary[1]
+                     end=start + (ary[3] || 0)
+                     print "-L" start "," end
+                    }')
+        if [[ -z "$lines" ]]; then
+            continue
+        fi
+        #echo $name $lines 1>&2
 
         # Get commit hashes of blame in modified range.
         git blame -l --incremental $lines -- "$REPO/$name" HEAD | \
