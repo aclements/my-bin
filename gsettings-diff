@@ -1,0 +1,14 @@
+#!/bin/zsh
+
+# Note: dconf dump / lists all user-modified settings (including
+# extensions). Though I think it doesn't know anything about the
+# schema, and also has its own particular syntax.
+
+# TODO: Really we want to diff each setting individually, rather than
+# diffing (meaningless) blocks of settings)
+diff -U 0 <(XDG_CONFIG_HOME=/nonexistent gsettings list-recursively) <(gsettings list-recursively)
+
+# TODO: Loop through
+for ext in ~/.local/share/gnome-shell/extensions/*/schemas; do
+    diff -U 0 <(XDG_CONFIG_HOME=/nonexistent gsettings --schemadir $ext list-recursively) <(gsettings --schemadir $ext list-recursively)
+done

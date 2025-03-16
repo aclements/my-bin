@@ -1,180 +1,260 @@
-#!/bin/zsh
+#!/usr/bin/python3
 
-set -e
+# Use gettings-diff to see what settings differ from defaults
 
-WM=paperwm # gnome or paperwm
+import argparse
+import os.path
+from typing import NamedTuple
 
-doCats=()
-mode=check
-while (( $# )); do
-    if [[ $1 == --check ]]; then
-        mode=check
-    elif [[ $1 == --apply ]]; then
-        mode=apply
-    elif [[ $1 == --list ]]; then
-        mode=list
-    elif [[ $1 == -* ]]; then
-        echo "bad usage"
-        exit 2
-    else
-        doCats=($doCats $1)
-    fi
-    shift
-done
+import dbus
+import gi
+gi.require_version("Gdk", "4.0")
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gio, GLib, Gdk, Gtk
 
-function logDo() {
-    if [[ $mode == apply ]]; then
-        echo "$1"
-        shift
-        $*
-    else
-        echo "$1 (dry run)"
-    fi
-}
+mode = "check"
+wm = None
+def main():
+    cats = [
+        set_view,
+        set_input,
+        set_keys,
+        set_paperwm,
+        set_notifications,
+    ]
 
-function gset() {
-    while (( $# )); do
-        if [[ $1 == "--extension" ]]; then
-            export GSETTINGS_SCHEMA_DIR=$HOME/.local/share/gnome-shell/extensions/$2/schemas
-            shift 2
-        elif [[ $1 == -* ]]; then
-            2>&1 echo "unknown flag $1"
-            exit 1
-        else
-            break
-        fi
-    done
-    schema=$1
-    shift
-    while (( $# )); do
-        gset1 $schema $1 $2
-        shift 2
-    done
-    unset GSETTINGS_SCHEMA_DIR
-}
+    parser = argparse.ArgumentParser()
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--check", action="store_const", dest="mode", const="check")
+    action.add_argument("--apply", action="store_const", dest="mode", const="apply")
+    action.add_argument("--list", action="store_const", dest="mode", const="list")
+    parser.add_argument("--wm", choices=["paperwm", "gnome"])
+    cat_names = ["all"] + [cat.__name__[4:] for cat in cats]
+    parser.add_argument("categories", nargs="*", choices=cat_names)
+    args = parser.parse_args()
 
-function gset1() {
-    cur=$(gsettings get $1 $2)
-    if [[ $cur == "@as []" ]]; then
-        # This means "array of strings" to disambiguate.
-        cur="[]"
-    fi
-    default=$(XDG_CONFIG_HOME=/nonexistent gsettings get $1 $2)
-    if [[ $default == "@as []" ]]; then
-        default="[]"
-    fi
+    global mode, wm
+    mode = args.mode
+    wm = args.wm
 
-    if [[ $cur != $3 || $mode == list ]]; then
-        echo $1 $2
-        echo "  Default:" $default
-        echo "  Current:" $cur
-        echo "  New:    " $3
-    fi
-    if [[ $mode == apply && $cur != $3 ]]; then
-        gsettings set $1 $2 $3
-    fi
-}
+    do_cats = set(args.categories)
+    if "all" in do_cats or len(do_cats) == 0:
+        do_cats = set(cat_names[1:])
+    for cat in cats:
+        if cat.__name__[4:] in do_cats:
+            cat()
 
-function installExtension() {
-    id=$1
-    if ! gnome-extensions info $id >&/dev/null; then
-        # Install extension
-        logDo "Installing $id" busctl --user call org.gnome.Shell.Extensions /org/gnome/Shell/Extensions org.gnome.Shell.Extensions InstallRemoteExtension s $id
-    fi
-    if ! gnome-extensions info -q $id | grep -q 'Enabled: Yes'; then
-        logDo "Enabling $id" gnome-extensions enable $id
-    else
-        echo "Extension $id already enabled"
-    fi
-}
+def logDo(fmt):
+    if mode == "apply":
+        print(fmt)
+        return True
+    else:
+        print(f"{fmt} (dry run)")
+        return False
 
-cats=()
+def get_settings(schemaID, path=None, extension=None):
+    # Useful example: https://docs.gtk.org/gio/struct.SettingsSchema.html?q=
+    if extension is not None:
+        # Combine home directory
+        dir = os.path.join(os.path.expanduser("~"), ".local/share/gnome-shell/extensions", extension, "schemas")
+        sss = Gio.SettingsSchemaSource.new_from_directory(dir, None, True)
+    else:
+        # In this case we could just use Gio.Settings.new, but we do this more
+        # explicit approach to unify the path more with extensions.
+        sss = Gio.SettingsSchemaSource.get_default()
 
-viewSet() {
+    schema = sss.lookup(schemaID, True)
+    return Gio.Settings.new_full(schema, None, path)
+
+def get(schemaID, key, path=None, extension=None):
+    s = get_settings(schemaID, path, extension)
+    return s.get_value(key)
+
+def gset(schemaID, *args, path=None, extension=None):
+    if len(args) % 2 != 0:
+        raise ValueError("expected an even number of arguments")
+
+    s = get_settings(schemaID, path, extension)
+    for i in range(0, len(args), 2):
+        k, v = args[i], args[i + 1]
+        gv = python_to_gvariant(v)
+        have = s.get_value(k)
+        if have != gv or mode == "list":
+            print(f"{schemaID}{':'+path if path else ''} {k}")
+            print(f"  Default: {s.get_default_value(k)}")
+            print(f"  Current: {have}")
+            print(f"  New:     {gv}")
+        if mode == "apply":
+            if have != gv:
+                s.set_value(k, gv)
+
+def python_to_gvariant(value):
+    """Converts a Python value to a GVariant."""
+    if isinstance(value, str):
+        return GLib.Variant.new_string(value)
+    elif isinstance(value, bool):
+        return GLib.Variant.new_boolean(value)
+    elif isinstance(value, int):
+        return GLib.Variant.new_int32(value)  # "i" code
+    elif isinstance(value, list):
+        if all(isinstance(item, str) for item in value):
+            return GLib.Variant("as", value)
+        elif all(isinstance(item, int) for item in value):
+            return GLib.Variant("ai", value)
+        else:
+            raise TypeError("Unsupported list element type")
+    elif isinstance(value, dict):
+        gvariant_dict_entries = {}
+        for key, val in value.items():
+            if not isinstance(key, str):
+                raise TypeError("Dictionary keys must be strings")
+            gvariant_dict_entries[key] = python_to_gvariant(val)
+        # I'm not sure what happens if something is expecting a more specific
+        # type, like "a{si}".
+        return GLib.Variant("a{sv}", gvariant_dict_entries)
+    elif isinstance(value, GLib.Variant):
+        return value
+    else:
+        raise TypeError(f"Unsupported type: {type(value)}")
+
+def install_extension(id):
+    bus = dbus.SessionBus()
+    proxy = bus.get_object("org.gnome.Shell.Extensions", "/org/gnome/Shell/Extensions")
+    manager = dbus.Interface(proxy, "org.gnome.Shell.Extensions")
+
+    # installed_extensions is a dict keyed by extension ID.
+    installed_extensions = manager.ListExtensions()
+    if id in installed_extensions:
+        print(f"Extension {id} already installed")
+        info = installed_extensions[id]
+    else:
+        if logDo(f"Installing {id}"):
+            manager.InstallRemoteExtension(id)
+            info = manager.GetExtensionInfo(id)
+        else:
+            # Can't dry-run enabling without installing
+            return False
+
+    if info["enabled"]:
+        print(f"Extension {id} already enabled")
+    else:
+        if logDo(f"Enabling {id}"):
+            manager.EnableExtension(id)
+        else:
+            return False
+
+    return True
+
+class Accel(NamedTuple):
+    key: int
+    mods: Gdk.ModifierType
+
+    @classmethod
+    def parse(cls, str):
+        ok, key, mods = Gtk.accelerator_parse(str)
+        if not ok:
+            raise ValueError(f"Invalid accelerator: {str}" )
+        return cls(key=key, mods=mods)
+
+    def __str__(self) -> str:
+        return Gtk.accelerator_name(self.key, self.mods)
+
+def set_view():
     # Dark mode
-    gset org.gnome.desktop.interface color-scheme "'prefer-dark'"
+    gset("org.gnome.desktop.interface", "color-scheme", "prefer-dark")
 
     # Switch workspaces on all displays
-    gset org.gnome.mutter "workspaces-only-on-primary" false
+    gset("org.gnome.mutter", "workspaces-only-on-primary", False)
 
     # Default monospace font
-    gset org.gnome.desktop.interface monospace-font-name "'Source Code Pro 9'"
+    gset("org.gnome.desktop.interface", "monospace-font-name", "Source Code Pro 9")
 
-    # Terminal font (this works, but it's easier to use the system default)
-    # prof=$(gsettings get org.gnome.Terminal.ProfilesList default)
-    # prof=${prof:1:-1}  # Strip leading and trailing '
-    # gset org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$prof/ font "'Source Code Pro 9'"
-    # gset org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$prof/ use-system-font false
-}
-cats=($cats view)
-
-inputSet() {
+def set_input():
     # Tap to click
-    gset org.gnome.desktop.peripherals.touchpad tap-to-click true
+    gset("org.gnome.desktop.peripherals.touchpad", "tap-to-click", True)
 
-    if [[ $WM == paperwm ]]; then
-        # Click to focus because PaperWM interacts poorly with sloppy focus
-        gset org.gnome.desktop.wm.preferences focus-mode "'click'"
-    else
+    if wm == "gnome":
         # Focus follows mouse
-        gset org.gnome.desktop.wm.preferences focus-mode "'sloppy'"
-    fi
-}
-cats=($cats input)
+        gset("org.gnome.desktop.wm.preferences", "focus-mode", "sloppy")
 
-keysSet() {
+def set_keys():
     # Workspace key bindings
     # https://unix.stackexchange.com/questions/677878/supernumber-key-combos-remapping-in-gnome-40-switch-workspaces-instead-of-laun
-    for i in {1..9}; do
+    for i in range(1, 10):
         # Clear default "switch to application" bindings
-        gset org.gnome.shell.keybindings switch-to-application-$i "[]"
+        gset("org.gnome.shell.keybindings", f"switch-to-application-{i}", [])
         # Set switch to workspace and move to workspace
-        gset org.gnome.desktop.wm.keybindings \
-             switch-to-workspace-$i "['<Super>${i}']" \
-             move-to-workspace-$i "['<Super><Shift>${i}']"
-    done
+        gset("org.gnome.desktop.wm.keybindings",
+             f"switch-to-workspace-{i}", [f'<Super>{i}'],
+             f"move-to-workspace-{i}", [f'<Super><Shift>{i}'])
 
     # Other key bindings
-    gset org.gnome.desktop.wm.keybindings maximize-vertically "['<Super>space']"
+    if wm == "gnome":
+        gset("org.gnome.desktop.wm.keybindings", "maximize-vertically", ['<Super>space'])
 
     # Custom keybindings. Note that this will clobber any existing custom
-    # bindings. It's not easy to just add or check for one.
-    gset org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/']"
-    gset org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ \
-         name "'Terminal'" \
-         command "'gnome-terminal'" \
-         binding "'<Super>Return'"
-}
-cats=($cats keys)
+    # bindings. It's annoying to just add or check for one.
+    gset("org.gnome.settings-daemon.plugins.media-keys",
+         "custom-keybindings", ['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/'])
+    gset("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding",
+         "name", "Terminal",
+         "command", "gnome-terminal",
+         "binding", "<Super>Return",
+         path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/")
 
-notificationsSet() {
+def set_paperwm():
+    if wm != "paperwm":
+        print("Skipping paperwm setup because of --wm setting")
+        return
+
+    id = "paperwm@paperwm.github.com"
+    if not install_extension(id):
+        # Dry run didn't install, so we can't do much
+        print("Skipping paperwm setup")
+        return
+
+    # Click to focus because PaperWM interacts poorly with sloppy focus
+    gset("org.gnome.desktop.wm.preferences", "focus-mode", "click")
+
+    # Disable maximize-vertically, which doesn't make much sense in PaperWM.
+    gset("org.gnome.desktop.wm.keybindings", "maximize-vertically", [])
+
+    # Basic settings
+    gset("org.gnome.shell.extensions.paperwm",
+         "disable-topbar-styling", True,
+         "show-window-position-bar", False,
+         extension=id)
+
+    # Key bindings
+    def addKeyBinding(name, kb):
+        kbs = get("org.gnome.shell.extensions.paperwm.keybindings",
+                  name, extension=id).get_strv()
+        kb = Accel.parse(kb)
+        if kb not in map(Accel.parse, kbs):
+            kbs.append(str(kb))
+        gset("org.gnome.shell.extensions.paperwm.keybindings", name, kbs, extension=id)
+    def rmKeyBinding(name, kb):
+        kbs = get("org.gnome.shell.extensions.paperwm.keybindings",
+                name, extension=id).get_strv()
+        kb = Accel.parse(kb)
+        kbs = [kb1 for kb1 in kbs if Accel.parse(kb1) != kb]
+        gset("org.gnome.shell.extensions.paperwm.keybindings", name, kbs, extension=id)
+    for dir, key in [("down", "j" ), ("left", "h" ), ("right", "l" ), ("up", "k")]:
+        addKeyBinding(f"switch-{dir}", f"<Super>{key}")
+        addKeyBinding(f"move-{dir}", f"<Shift><Super>{key}")
+    rmKeyBinding("new-window", "<Super>Return") # Conflicts with Terminal keybinding
+
+def set_notifications():
     # Make notifications appear in the bottom right and slide up from
     # the bottom.
-    local ID=notification-banner-reloaded@marcinjakubowski.github.com
-    installExtension $ID
-    gset --extension $ID org.gnome.shell.extensions.notification-banner-reloaded \
-         anchor-horizontal 1 \
-         anchor-vertical 1 \
-         animation-direction 3
-}
-cats=($cats notifications)
+    id = "notification-banner-reloaded@marcinjakubowski.github.com"
+    if not install_extension(id):
+        print("Skipping setup of notifications")
+        return
+    gset("org.gnome.shell.extensions.notification-banner-reloaded",
+         "anchor-horizontal", 1,
+         "anchor-vertical", 1,
+         "animation-direction", 3,
+         extension=id)
 
-if [[ ${#doCats} == 0 ]]; then
-    2>&1 echo "Usage: $0 {--check|--list|--apply} <categories...>"
-    2>&1 echo
-    2>&1 echo "Categories: all $cats"
-    exit
-fi
-for doCat in $doCats; do
-    if [[ $doCat == all ]]; then
-        for doCat in $cats; do
-            ${doCat}Set
-        done
-    else
-        ${doCat}Set
-    fi
-done
-
-if [[ $mode == check ]]; then
-    echo "Use '$0 --apply' to apply these changes"
-fi
+main()
