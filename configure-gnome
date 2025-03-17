@@ -132,23 +132,25 @@ def install_extension(id):
     # installed_extensions is a dict keyed by extension ID.
     installed_extensions = manager.ListExtensions()
     if id in installed_extensions:
-        print(f"Extension {id} already installed")
         info = installed_extensions[id]
+        if info["enabled"]:
+            print(f"Extension {id} already installed and enabled")
+            return True
+        print(f"Extension {id} already installed")
     else:
-        if logDo(f"Installing {id}"):
-            manager.InstallRemoteExtension(id)
-            info = manager.GetExtensionInfo(id)
-        else:
+        if not logDo(f"Installing {id}"):
             # Can't dry-run enabling without installing
             return False
+        manager.InstallRemoteExtension(id)
+        info = manager.GetExtensionInfo(id)
+        # I think installing automatically enables, but if not, we'll fall
+        # through to enabling.
+        if info["enabled"]:
+            return True
 
-    if info["enabled"]:
-        print(f"Extension {id} already enabled")
-    else:
-        if logDo(f"Enabling {id}"):
-            manager.EnableExtension(id)
-        else:
-            return False
+    if not logDo(f"Enabling {id}"):
+        return False
+    manager.EnableExtension(id)
 
     return True
 
@@ -253,6 +255,10 @@ def set_paperwm():
     gset("org.gnome.shell.extensions.paperwm",
          "disable-topbar-styling", True,
          "show-window-position-bar", False,
+         # The default top- and bottom-of-screen margin is really big.
+         # Make just enough room to see the 10px border.
+         "vertical-margin", 12,
+         "vertical-margin-bottom", 12,
          extension=id)
 
     # Key bindings
