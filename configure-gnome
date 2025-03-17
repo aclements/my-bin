@@ -77,7 +77,11 @@ def gset(schemaID, *args, path=None, extension=None):
     s = get_settings(schemaID, path, extension)
     for i in range(0, len(args), 2):
         k, v = args[i], args[i + 1]
-        gv = python_to_gvariant(v)
+        if v is None:
+            # Reset to default
+            gv = s.get_default_value(k)
+        else:
+            gv = python_to_gvariant(v)
         have = s.get_value(k)
         if have != gv or mode == "list":
             print(f"{schemaID}{':'+path if path else ''} {k}")
@@ -86,7 +90,10 @@ def gset(schemaID, *args, path=None, extension=None):
             print(f"  New:     {gv}")
         if mode == "apply":
             if have != gv:
-                s.set_value(k, gv)
+                if v is None:
+                    s.reset(k)
+                else:
+                    s.set_value(k, gv)
 
 def python_to_gvariant(value):
     """Converts a Python value to a GVariant."""
@@ -176,6 +183,9 @@ def set_input():
     if wm == "gnome":
         # Focus follows mouse
         gset("org.gnome.desktop.wm.preferences", "focus-mode", "sloppy")
+    elif wm == "paperwm":
+        # Click to focus because PaperWM interacts poorly with sloppy focus
+        gset("org.gnome.desktop.wm.preferences", "focus-mode", "click")
 
 def set_keys():
     # Workspace key bindings
@@ -188,9 +198,35 @@ def set_keys():
              f"switch-to-workspace-{i}", [f'<Super>{i}'],
              f"move-to-workspace-{i}", [f'<Super><Shift>{i}'])
 
-    # Other key bindings
-    if wm == "gnome":
-        gset("org.gnome.desktop.wm.keybindings", "maximize-vertically", ['<Super>space'])
+    # WM=specific key bindings
+    def gsetWM(schema, key, gnome=None, paperwm=None):
+        if wm == "gnome":
+            gset(schema, key, gnome)
+        elif wm == "paperwm":
+            gset(schema, key, paperwm)
+    # Disable maximize-vertically, which doesn't make much sense in PaperWM.
+    gsetWM("org.gnome.desktop.wm.keybindings",
+           "maximize-vertically", gnome='<Super>space', paperwm=[])
+    # Conflicts with <Super>up/down
+    gsetWM("org.gnome.desktop.wm.keybindings",
+           "maximize", paperwm=[])
+    gsetWM("org.gnome.desktop.wm.keybindings",
+           "unmaximize", paperwm=[])
+    # Conflicts with <Super>h
+    gsetWM("org.gnome.desktop.wm.keybindings",
+           "minimize", paperwm=[])
+    # Conflitcs with <Shift><Super>(arrow)
+    for dir in ["up", "down", "left", "right"]:
+        gsetWM("org.gnome.desktop.wm.keybindings",
+               f"move-to-monitor-{dir}", paperwm=[])
+    # Conflicts with <Super>l
+    gsetWM("org.gnome.settings-daemon.plugins.media-keys",
+           "screensaver", paperwm=["<Super>q"])
+    # Conflicts with <Super>Left, <Super>Right
+    gsetWM("org.gnome.mutter.keybindings",
+           "toggle-tiled-left", paperwm=[])
+    gsetWM("org.gnome.mutter.keybindings",
+           "toggle-tiled-right", paperwm=[])
 
     # Custom keybindings. Note that this will clobber any existing custom
     # bindings. It's annoying to just add or check for one.
@@ -212,12 +248,6 @@ def set_paperwm():
         # Dry run didn't install, so we can't do much
         print("Skipping paperwm setup")
         return
-
-    # Click to focus because PaperWM interacts poorly with sloppy focus
-    gset("org.gnome.desktop.wm.preferences", "focus-mode", "click")
-
-    # Disable maximize-vertically, which doesn't make much sense in PaperWM.
-    gset("org.gnome.desktop.wm.keybindings", "maximize-vertically", [])
 
     # Basic settings
     gset("org.gnome.shell.extensions.paperwm",
