@@ -178,7 +178,16 @@ def set_view():
     # Default monospace font
     gset("org.gnome.desktop.interface", "monospace-font-name", "Source Code Pro 9")
 
+    # Turn off alert sound
+    gset("org.gnome.desktop.sound", "event-sounds", False)
+
+    # Use transparent dash
+    gset("org.gnome.shell.extensions.dash-to-panel", "trans-use-custom-opacity", True)
+
 def set_input():
+    # Control key
+    gset("org.gnome.desktop.input-sources", "xkb-options", ["caps:ctrl_modifier"])
+
     # Tap to click
     gset("org.gnome.desktop.peripherals.touchpad", "tap-to-click", True)
 
@@ -217,7 +226,7 @@ def set_keys():
     # Conflicts with <Super>h
     gsetWM("org.gnome.desktop.wm.keybindings",
            "minimize", paperwm=[])
-    # Conflitcs with <Shift><Super>(arrow)
+    # Conflicts with <Shift><Super>(arrow)
     for dir in ["up", "down", "left", "right"]:
         gsetWM("org.gnome.desktop.wm.keybindings",
                f"move-to-monitor-{dir}", paperwm=[])
