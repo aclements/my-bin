@@ -1,0 +1,9 @@
+#!/bin/sh
+
+if command -v ptyxis > /dev/null 2>&1; then
+    exec ptyxis --new-window "$@"
+fi
+if command -v gnome-terminal > /dev/null 2>&1; then
+    exec gnome-terminal "$@"
+fi
+exec xterm "$@"

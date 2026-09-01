@@ -64,6 +64,8 @@ def get_settings(schemaID, path=None, extension=None):
         sss = Gio.SettingsSchemaSource.get_default()
 
     schema = sss.lookup(schemaID, True)
+    if schema is None:
+        raise ValueError(f"unknown schema {schemaID}")
     return Gio.Settings.new_full(schema, None, path)
 
 def get(schemaID, key, path=None, extension=None):
@@ -103,6 +105,8 @@ def python_to_gvariant(value):
         return GLib.Variant.new_boolean(value)
     elif isinstance(value, int):
         return GLib.Variant.new_int32(value)  # "i" code
+    elif isinstance(value, float):
+        return GLib.Variant.new_double(value)
     elif isinstance(value, list):
         if all(isinstance(item, str) for item in value):
             return GLib.Variant("as", value)
@@ -184,6 +188,10 @@ def set_view():
     # Use transparent dash
     gset("org.gnome.shell.extensions.dash-to-panel", "trans-use-custom-opacity", True)
 
+    ptyxisUUID = get("org.gnome.Ptyxis", "default-profile-uuid").get_string()
+    gset(f"org.gnome.Ptyxis.Profile", "opacity", 0.95,
+         path=f"/org/gnome/Ptyxis/Profiles/{ptyxisUUID}/")
+
 def set_input():
     # Control key
     gset("org.gnome.desktop.input-sources", "xkb-options", ["caps:ctrl_modifier"])
@@ -245,7 +253,7 @@ def set_keys():
          "custom-keybindings", ['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/'])
     gset("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding",
          "name", "Terminal",
-         "command", "gnome-terminal",
+         "command", "x-terminal-emulator",
          "binding", "<Super>Return",
          path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/")
 
