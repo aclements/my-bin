@@ -1,0 +1,58 @@
+#!/bin/sh
+# Build niri and xwayland-satellite in a container, extract them into ./out, and
+# check they actually run on this host. configure-niri installs what lands here.
+#
+# To upgrade niri, bump the versions below and re-run.
+
+set -e
+
+NIRI_VERSION=v26.04
+XWS_VERSION=v0.8.2
+
+cd "$(dirname "$0")"
+IMAGE=niri-build
+
+docker build \
+    --build-arg NIRI_VERSION="$NIRI_VERSION" \
+    --build-arg XWS_VERSION="$XWS_VERSION" \
+    -t "$IMAGE" .
+
+# docker cp needs a container, but not a running one.
+rm -rf out
+cid=$(docker create "$IMAGE")
+trap 'docker rm -f "$cid" >/dev/null 2>&1' EXIT
+docker cp "$cid:/out" out
+
+# Everything configure-niri installs has to be here. A missing file means the
+# build or the copy went wrong, not something to install half of.
+absent=
+for f in niri niri-session xwayland-satellite niri.desktop niri-portals.conf \
+         niri.service niri-shutdown.target default-config.kdl \
+         runtime-deps.txt build-info.txt; do
+    [ -e "out/$f" ] || absent="$absent $f"
+done
+if [ -n "$absent" ]; then
+    echo "Build did not produce:$absent" >&2
+    exit 1
+fi
+
+# Report libraries this host cannot resolve. Usually that is just a package not
+# installed yet, which configure-niri fixes from out/runtime-deps.txt, so it is
+# a warning here rather than an error -- configure-niri refuses to install
+# binaries that still do not resolve. If a package IS installed and the library
+# is still missing, the image is ahead of the host: upgrade it, or pin the FROM
+# line in Dockerfile to an older debian:testing digest.
+for bin in out/niri out/xwayland-satellite; do
+    unresolved=$(ldd "$bin" | grep 'not found' || true)
+    if [ -n "$unresolved" ]; then
+        echo >&2
+        echo "warning: $bin needs libraries this host does not have:" >&2
+        echo "$unresolved" >&2
+        echo "These come from packages listed in out/runtime-deps.txt." >&2
+        echo "Run: configure-niri --apply packages" >&2
+    fi
+done
+
+echo
+echo "Built into $(pwd)/out"
+echo "Install with: configure-niri --apply"
