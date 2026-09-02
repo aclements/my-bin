@@ -19,6 +19,17 @@
 # DMS_SETTINGS. Anything whose default could not be read is listed separately
 # rather than silently ignored -- "no output" must not be mistaken for
 # "nothing has changed".
+#
+# Caveat on acting on the output: `dms ipc call settings set` refuses objects
+# and arrays, so a changed setting whose value is one of those (barConfigs, say)
+# is reported here but cannot be put in DMS_SETTINGS. DMS disabled that branch
+# pending quickshell gaining a way to pass structured JSON over IPC:
+#
+#   https://github.com/quickshell-mirror/quickshell/pull/22
+#   "cli: add `callJson` ipc subcommand" -- open since 2025-03-02
+#
+# Only the settings store is affected. The session store has no setter at all,
+# and the clipboard store is set through flags on `dms clipboard config set`.
 
 import argparse
 import json
@@ -28,11 +39,35 @@ import subprocess
 import sys
 
 QML = os.path.expanduser("~/.config/quickshell/dms/Common/SettingsData.qml")
+SESSION_QML = os.path.expanduser(
+    "~/.config/quickshell/dms/Common/SessionData.qml")
 SPEC_JS = os.path.expanduser(
     "~/.config/quickshell/dms/Common/settings/SettingsSpec.js")
 SETTINGS_JSON = os.path.expanduser(
     "~/.config/DankMaterialShell/settings.json")
+SESSION_JSON = os.path.expanduser(
+    "~/.local/state/DankMaterialShell/session.json")
+CLIPBOARD_JSON = os.path.expanduser(
+    "~/.config/DankMaterialShell/clsettings.json")
 DMS = os.path.expanduser("~/bin/dms")
+
+# DMS spreads user-facing settings over three files, and its settings GUI gives
+# no sign of which one you are editing. Only the first is reachable through
+# `dms ipc call settings`, so only that one can go in DMS_SETTINGS.
+#
+# The clipboard defaults are hardcoded because the Go daemon ships no readable
+# defaults and ignores --config for `clipboard config get`. maxHistory and
+# maxEntrySize are confirmed from DefaultStoreConfig() in
+# core/internal/clipboard/store.go; the rest are the values a fresh install
+# shows. Check them if upstream changes.
+CLIPBOARD_DEFAULTS = {
+    "maxHistory": 100,
+    "maxEntrySize": 5 * 1024 * 1024,
+    "autoClearDays": 0,
+    "clearAtStartup": False,
+    "disabled": False,
+    "maxPinned": 25,
+}
 
 # Declarations that are machinery rather than settings.
 SKIP_TYPES = {"alias", "Timer", "Process", "Component", "Connections"}
@@ -58,12 +93,31 @@ def main():
     parser.add_argument("--all", action="store_true",
                         help="also list settings that match their default")
     parser.add_argument("--json", action="store_true",
-                        help="emit changed settings as JSON")
+                        help="emit changed settings.json settings as JSON")
     args = parser.parse_args()
 
-    defaults, unparsed = parse_defaults()
-    live = load_live()
+    settings = compare(parse_defaults(QML), load_live())
 
+    if args.json:
+        # Only the settings.json store: those are the ones DMS_SETTINGS can
+        # express, and configure-niri reads this to spot uncaptured drift.
+        print(json.dumps(dict(settings[0]), indent=2))
+        return
+
+    report("settings", settings, args.all,
+           "Paste into DMS_SETTINGS in configure-niri to make them portable.")
+
+    session = compare(parse_defaults(SESSION_QML), load_json(SESSION_JSON))
+    report("session state", session, args.all,
+           "No generic IPC for these. Some have their own call, e.g. the\n"
+           "  wallpaper; configure-niri sets that one in set_dms().")
+
+    clipboard = compare((CLIPBOARD_DEFAULTS, {}), load_json(CLIPBOARD_JSON))
+    report("clipboard", clipboard, args.all,
+           "Apply with: dms clipboard config set <key> <value>")
+
+def compare(defaults_and_unparsed, live):
+    defaults, unparsed = defaults_and_unparsed
     changed, same, uncomparable = [], [], []
     for key in sorted(live):
         if key in NOT_SETTINGS:
@@ -75,35 +129,39 @@ def main():
             same.append((key, live[key]))
         else:
             changed.append((key, live[key]))
+    return changed, same, uncomparable
 
-    if args.json:
-        print(json.dumps(dict(changed), indent=2))
-        return
-
+def report(store, result, show_all, howto):
+    changed, same, uncomparable = result
+    print(f"=== {store} ===")
     if changed:
-        print(f"{len(changed)} setting(s) differ from default:")
-        print()
         for key, value in changed:
             print(f"    ({key!r}, {value!r}),")
         print()
-        print("  Paste into DMS_SETTINGS in configure-niri to make them portable.")
+        print(f"  {howto}")
     else:
-        print("No settings differ from their defaults.")
+        print("  nothing differs from default")
 
-    if args.all and same:
-        print()
-        print(f"{len(same)} setting(s) at default:")
+    if show_all and same:
+        print(f"  {len(same)} at default:")
         for key, value in same:
-            print(f"  {key}: {value!r}")
+            print(f"    {key}: {value!r}")
 
     if uncomparable:
-        print()
-        print(f"{len(uncomparable)} setting(s) could not be compared, so a "
-              f"change to one will not show above:")
+        print(f"  {len(uncomparable)} could not be compared, so a change to one "
+              f"will not show above:")
         for key, why, value in uncomparable:
-            print(f"  {key}")
-            print(f"      default: {why}")
-            print(f"      current: {json.dumps(value)[:90]}")
+            print(f"    {key}")
+            print(f"        default: {why}")
+            print(f"        current: {json.dumps(value)[:80]}")
+    print()
+
+def load_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
 
 def load_live():
     """Current settings: from the running shell if there is one, else the file
@@ -121,12 +179,13 @@ def load_live():
     except OSError:
         sys.exit(f"no settings found: {SETTINGS_JSON} missing and DMS not running")
 
-def parse_defaults():
-    """Defaults declared in SettingsData.qml, and the names we could not read."""
+def parse_defaults(qml=QML):
+    """Defaults declared in a DMS data QML file, and the names we could not
+    read. SettingsData.qml and SessionData.qml share the same shape."""
     try:
-        text = open(QML).read()
+        text = open(qml).read()
     except OSError:
-        sys.exit(f"cannot read {QML}; is the DMS shell installed?")
+        sys.exit(f"cannot read {qml}; is the DMS shell installed?")
 
     enums = parse_enums(text)
     spec = parse_spec()
@@ -210,8 +269,22 @@ def extract(text, pos):
     if pos >= len(text):
         return ""
     if text[pos] not in "([{":
-        end = pos
-        while end < len(text) and text[end] not in ",}\n":
+        # Scan to the comma, brace or newline that ends the value -- but not one
+        # inside a string. "40.7128,-71.2245003" must not truncate at the comma.
+        end, in_str, esc = pos, False, False
+        while end < len(text):
+            c = text[end]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+            elif c == '"':
+                in_str = True
+            elif c in ",}\n":
+                break
             end += 1
         return text[pos:end].strip()
 

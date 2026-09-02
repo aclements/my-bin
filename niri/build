@@ -53,7 +53,9 @@ fi
 # is still missing, the image is ahead of the host: upgrade it, or pin the FROM
 # line in Dockerfile to an older debian:testing digest.
 for bin in out/niri out/xwayland-satellite out/matugen out/dms out/dgop out/dsearch; do
-    unresolved=$(ldd "$bin" | grep 'not found' || true)
+    # The Go binaries are static, so ldd says "not a dynamic executable" on
+    # stderr. That is expected, not a problem worth printing.
+    unresolved=$(ldd "$bin" 2>/dev/null | grep 'not found' || true)
     if [ -n "$unresolved" ]; then
         echo >&2
         echo "warning: $bin needs libraries this host does not have:" >&2

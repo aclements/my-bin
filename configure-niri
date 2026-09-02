@@ -534,13 +534,40 @@ def owning_package(path):
 
 DMS_BIN = os.path.join(HOME, "bin/dms")
 
-# DMS keeps its settings in ~/.config/DankMaterialShell/settings.json -- a full
-# dump of ~530 keys, essentially all at their defaults. We drive it through
-# `dms ipc call settings`, not by editing that file: DMS holds it open with
-# watchChanges and atomicWrites, so a direct write races whatever DMS has in
-# memory, while IPC validates and applies immediately. It is the same shape as
-# gsettings, so --check/--apply/--list behave the same way here.
+# DMS keeps user settings in three separate files, and offers a different way to
+# set each. A key may carry a namespace prefix; a bare key means the main
+# settings store:
 #
+#   <key>              ~/.config/DankMaterialShell/settings.json
+#                      via `dms ipc call settings set` -- scalars only, since
+#                      that call refuses objects and arrays (see OBJECT_BUG)
+#   clipboard/<key>    ~/.config/DankMaterialShell/clsettings.json
+#                      via `dms clipboard config set`, which takes flags rather
+#                      than key/value, so only the keys in CLIPBOARD_FLAGS work
+#
+# The third store, ~/.local/state/DankMaterialShell/session.json (weather
+# coordinates, night mode, wallpaper), has no generic setter at all. The
+# wallpaper has its own IPC call and is handled below; the rest can only be set
+# through the DMS GUI. dms-diff reports all three.
+#
+# We drive settings through IPC rather than editing the files: DMS holds them
+# open with watchChanges and atomicWrites, so a direct write races whatever it
+# has in memory, while IPC validates and applies immediately. It is the same
+# shape as gsettings, so --check/--apply/--list behave the same way here.
+#
+# DMS's `settings set` throws "Setting Objects and Arrays not supported" for any
+# non-scalar, so settings like barConfigs cannot be captured here at all. That is
+# deliberate on their side, waiting on quickshell gaining a way to pass
+# structured JSON over IPC:
+#
+#   https://github.com/quickshell-mirror/quickshell/pull/22
+#   "cli: add `callJson` ipc subcommand" -- open since 2025-03-02
+#
+# DMSShellIPC.qml cites that PR at the `case "object":` branch. If it merges and
+# DMS enables the branch, object and array settings become capturable and dset()
+# below can drop its restriction.
+OBJECT_BUG = "https://github.com/quickshell-mirror/quickshell/pull/22"
+
 # Settings worth carrying between machines go here, as (key, value).
 DMS_SETTINGS = [
     # Derive the whole palette from the wallpaper via matugen, rather than
@@ -555,14 +582,39 @@ DMS_SETTINGS = [
     # timeouts are the idle behaviour around it, in seconds.
     ("lockBeforeSuspend", True),
     ("acLockTimeout", 600),
+    ("batteryLockTimeout", 600),
+
+    # Power settings
     ("acPostLockMonitorTimeout", 60),
     ("acSuspendTimeout", 7200),
     ("acProfileName", "2"),
-    ("batteryLockTimeout", 600),
     ("batteryPostLockMonitorTimeout", 60),
     ("batterySuspendTimeout", 900),
     ("batteryProfileName", "1"),
+
+    # Monitor switching
+    ('displayNameMode', 'model'),
+    ('displayProfileAutoSelect', True),
+
+    # Misc
+    ('launcherStyle', 'spotlight'),
+    ('notificationShowTimeoutBar', True),
+    ('showWorkspaceIndex', True),
+    ('useFahrenheit', True),
+
+    # Clipboard works but nothing is written to disk. Off by default.
+    ("clipboard/disabled", True),
 ]
+
+# `dms clipboard config set` takes flags, not key/value. A pair is
+# (flag-when-true, flag-when-false); a string is a flag taking the value.
+# maxEntrySize and maxPinned have no flag, so they cannot be set this way.
+CLIPBOARD_FLAGS = {
+    "disabled": ("--disable", "--enable"),
+    "clearAtStartup": ("--clear-at-startup", "--no-clear-at-startup"),
+    "maxHistory": "--max-history",
+    "autoClearDays": "--auto-clear-days",
+}
 
 # The wallpaper is not a setting: it lives in session state
 # (~/.local/state/DankMaterialShell/session.json) and has its own IPC call.
@@ -579,13 +631,33 @@ DMS_SETTINGS = [
 WALLPAPER_DIR = "Pictures/Wallpapers"
 WALLPAPER = "mark-harpur-K2s_YE031CA-unsplash.jpg"
 
-def dget(key):
-    """Current value of a DMS setting.
+def namespaced(key):
+    """Split a DMS setting key into (namespace, key)."""
+    ns, sep, rest = key.partition("/")
+    return (ns, rest) if sep else ("settings", key)
 
-    `settings get` returns the value JSON-encoded, so a string comes back as
-    "purple" rather than purple. `settings set` takes it raw -- feeding one
-    straight into the other double-encodes it.
-    """
+_clipboard = None
+
+def clipboard_config():
+    """The clipboard store, read once per run."""
+    global _clipboard
+    if _clipboard is None:
+        p = query([DMS_BIN, "clipboard", "config", "get"])
+        try:
+            _clipboard = json.loads(p.stdout)
+        except ValueError:
+            _clipboard = {}
+    return _clipboard
+
+def dget(key):
+    """Current value of a DMS setting, in whichever store holds it."""
+    ns, key = namespaced(key)
+    if ns == "clipboard":
+        return clipboard_config().get(key)
+
+    # `settings get` returns the value JSON-encoded, so a string comes back as
+    # "purple" rather than purple. `settings set` takes it raw -- feeding one
+    # straight into the other double-encodes it.
     p = query([DMS_BIN, "ipc", "call", "settings", "get", key])
     out = p.stdout.strip()
     if p.returncode != 0 or out in ("", "undefined"):
@@ -601,10 +673,25 @@ def dset(key, value):
         print(f"dms {key}")
         print(f"  Current: {have!r}")
         print(f"  New:     {value!r}")
-    if have != value and configlib.mode == "apply":
+    if have == value or configlib.mode != "apply":
+        return
+
+    ns, name = namespaced(key)
+    if ns == "clipboard":
+        flag = CLIPBOARD_FLAGS.get(name)
+        if flag is None:
+            print(f"  Cannot set {key}: dms clipboard config set has no flag "
+                  f"for it")
+            return
+        args = ([flag[0] if value else flag[1]] if isinstance(flag, tuple)
+                else [flag, str(value)])
+        run([DMS_BIN, "clipboard", "config", "set"] + args)
+        global _clipboard
+        _clipboard = None          # re-read rather than trust our own write
+    else:
         # Raw for strings, JSON for everything else -- see dget.
         raw = value if isinstance(value, str) else json.dumps(value)
-        run([DMS_BIN, "ipc", "call", "settings", "set", key, raw])
+        run([DMS_BIN, "ipc", "call", "settings", "set", name, raw])
 
 def session_value(key):
     try:
@@ -627,7 +714,8 @@ def uncaptured():
         drift = json.loads(p.stdout)
     except ValueError:
         return {}
-    declared = {k for k, _ in DMS_SETTINGS}
+    declared = {name for k, _ in DMS_SETTINGS
+                for ns, name in [namespaced(k)] if ns == "settings"}
     return {k: v for k, v in drift.items() if k not in declared}
 
 def set_dms():
@@ -640,14 +728,27 @@ def set_dms():
         dset(key, value)
 
     extra = uncaptured()
-    if extra:
-        print(f"{len(extra)} DMS setting(s) differ from default but are not in "
-              f"DMS_SETTINGS,")
+    # `settings set` refuses objects and arrays -- see OBJECT_BUG above -- so
+    # those cannot be captured this way even though they have drifted.
+    settable = {k: v for k, v in extra.items()
+                if not isinstance(v, (dict, list))}
+    unsettable = sorted(set(extra) - set(settable))
+    if settable:
+        print(f"{len(settable)} DMS setting(s) differ from default but are not "
+              f"in DMS_SETTINGS,")
         print("  so a reinstall would not reproduce them:")
-        for key, value in sorted(extra.items()):
+        for key, value in sorted(settable.items()):
             print(f"    ({key!r}, {value!r}),")
-        print(f"  Add what you want to keep; {os.path.join(BIN, 'dms-diff')} "
-              f"shows the full picture.")
+    if unsettable:
+        print(f"{len(unsettable)} more have drifted but are objects or arrays, "
+              f"which DMS's IPC")
+        print(f"  refuses to set: {' '.join(unsettable)}")
+        print("  They can only be reproduced through the DMS GUI, until")
+        print(f"  {OBJECT_BUG} lands.")
+    if extra:
+        print(f"  {os.path.join(BIN, 'dms-diff')} shows the full picture, "
+              f"including the")
+        print("  session-state and clipboard stores, which live in other files.")
 
     if WALLPAPER is None:
         print(f"No wallpaper declared; put one in ~/{WALLPAPER_DIR}, "
