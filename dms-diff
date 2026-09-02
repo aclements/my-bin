@@ -1,0 +1,310 @@
+#!/usr/bin/python3
+
+# Show which DankMaterialShell settings differ from their defaults, so changes
+# made in the DMS GUI can be ported into DMS_SETTINGS in configure-niri.
+#
+# The DMS counterpart to gsettings-diff. That one gets its defaults by pointing
+# gsettings at an empty XDG_CONFIG_HOME; there is no equivalent trick here,
+# because `dms ipc` talks to the running shell rather than reading a config
+# directory. So defaults come from the property declarations in SettingsData.qml.
+#
+# Note that DMS also ships Common/settings/SettingsSpec.js, a declarative table
+# of every setting and its default, which looks like the better source. It is
+# not: it disagrees with the QML in places (cornerRadius 16 vs 12,
+# controlCenterShowMicPercent false vs true), and the QML is what the live
+# values actually match. Only two properties defer to the spec, so it appears to
+# be a half-finished migration. We read it solely to resolve those two.
+#
+# Prints changed settings as (key, value) pairs, ready to paste into
+# DMS_SETTINGS. Anything whose default could not be read is listed separately
+# rather than silently ignored -- "no output" must not be mistaken for
+# "nothing has changed".
+
+import argparse
+import json
+import os.path
+import re
+import subprocess
+import sys
+
+QML = os.path.expanduser("~/.config/quickshell/dms/Common/SettingsData.qml")
+SPEC_JS = os.path.expanduser(
+    "~/.config/quickshell/dms/Common/settings/SettingsSpec.js")
+SETTINGS_JSON = os.path.expanduser(
+    "~/.config/DankMaterialShell/settings.json")
+DMS = os.path.expanduser("~/bin/dms")
+
+# Declarations that are machinery rather than settings.
+SKIP_TYPES = {"alias", "Timer", "Process", "Component", "Connections"}
+
+# Keys DMS keeps in settings.json that are not settings. configVersion is the
+# schema version it bumps itself when migrating the file (see migrateToVersion
+# in SettingsData.qml), so it has no declared default and reporting it as
+# uncomparable would just be noise.
+NOT_SETTINGS = {"configVersion"}
+
+# Qt's own enums, which are not declared in the QML we parse.
+BUILTIN_ENUMS = {
+    "Font": {"Thin": 100, "ExtraLight": 200, "Light": 300, "Normal": 400,
+             "Medium": 500, "DemiBold": 600, "Bold": 700, "ExtraBold": 800,
+             "Black": 900},
+}
+
+_UNPARSED = object()
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Show which DankMaterialShell settings differ from default.")
+    parser.add_argument("--all", action="store_true",
+                        help="also list settings that match their default")
+    parser.add_argument("--json", action="store_true",
+                        help="emit changed settings as JSON")
+    args = parser.parse_args()
+
+    defaults, unparsed = parse_defaults()
+    live = load_live()
+
+    changed, same, uncomparable = [], [], []
+    for key in sorted(live):
+        if key in NOT_SETTINGS:
+            continue
+        if key not in defaults:
+            uncomparable.append((key, unparsed.get(key, "not declared"),
+                                 live[key]))
+        elif normalize(defaults[key]) == normalize(live[key]):
+            same.append((key, live[key]))
+        else:
+            changed.append((key, live[key]))
+
+    if args.json:
+        print(json.dumps(dict(changed), indent=2))
+        return
+
+    if changed:
+        print(f"{len(changed)} setting(s) differ from default:")
+        print()
+        for key, value in changed:
+            print(f"    ({key!r}, {value!r}),")
+        print()
+        print("  Paste into DMS_SETTINGS in configure-niri to make them portable.")
+    else:
+        print("No settings differ from their defaults.")
+
+    if args.all and same:
+        print()
+        print(f"{len(same)} setting(s) at default:")
+        for key, value in same:
+            print(f"  {key}: {value!r}")
+
+    if uncomparable:
+        print()
+        print(f"{len(uncomparable)} setting(s) could not be compared, so a "
+              f"change to one will not show above:")
+        for key, why, value in uncomparable:
+            print(f"  {key}")
+            print(f"      default: {why}")
+            print(f"      current: {json.dumps(value)[:90]}")
+
+def load_live():
+    """Current settings: from the running shell if there is one, else the file
+    it persists to."""
+    try:
+        p = subprocess.run([DMS, "ipc", "call", "settings", "dump"],
+                           capture_output=True, text=True)
+        if p.returncode == 0 and p.stdout.strip():
+            return json.loads(p.stdout)
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(SETTINGS_JSON) as f:
+            return json.load(f)
+    except OSError:
+        sys.exit(f"no settings found: {SETTINGS_JSON} missing and DMS not running")
+
+def parse_defaults():
+    """Defaults declared in SettingsData.qml, and the names we could not read."""
+    try:
+        text = open(QML).read()
+    except OSError:
+        sys.exit(f"cannot read {QML}; is the DMS shell installed?")
+
+    enums = parse_enums(text)
+    spec = parse_spec()
+    raws, defaults, unparsed = {}, {}, {}
+    # `readonly property ...` counts too: _dashTabsDefault is declared that way,
+    # and other properties default to it.
+    for m in re.finditer(r'^[ \t]+(?:readonly\s+|default\s+|required\s+)*'
+                         r'property\s+(\w+)\s+(\w+)\s*:[ \t]*', text, re.M):
+        typ, name = m.group(1), m.group(2)
+        if typ in SKIP_TYPES:
+            continue
+        raw = extract(text, m.end())
+        raws[name] = raw
+        if name.startswith("_"):
+            continue          # private, but kept so references can resolve
+        value = parse_value(typ, raw, enums, spec)
+        if value is _UNPARSED:
+            unparsed[name] = raw
+        else:
+            defaults[name] = value
+
+    # Some properties default to another property rather than to a literal,
+    # e.g. `property var dashTabs: _dashTabsDefault`.
+    for name, raw in list(unparsed.items()):
+        target = raw.strip()
+        if re.fullmatch(r'\w+', target) and target in raws:
+            value = parse_value("var", raws[target], enums, spec)
+            if value is not _UNPARSED:
+                defaults[name] = value
+                del unparsed[name]
+
+    return defaults, unparsed
+
+def parse_spec():
+    """The `def` values from SettingsSpec.js.
+
+    Used only for properties that explicitly defer to it, since it disagrees
+    with the QML elsewhere -- see the note at the top of this file.
+    """
+    try:
+        text = open(SPEC_JS).read()
+    except OSError:
+        return {}
+    spec = {}
+    for m in re.finditer(r'^\s+(\w+):\s*\{', text, re.M):
+        entry = extract(text, m.end() - 1)
+        d = re.search(r'\bdef:\s*', entry)
+        if d:
+            value = parse_json_ish(extract(entry, d.end()))
+            if value is not _UNPARSED:
+                spec[m.group(1)] = value
+    return spec
+
+def parse_enums(text):
+    """QML enums, whose members are implicitly numbered from zero.
+
+    Several int properties default to one of these rather than to a literal,
+    e.g. `property int dockPosition: SettingsData.Position.Bottom`.
+    """
+    enums = dict(BUILTIN_ENUMS)
+    for m in re.finditer(r'^\s*enum\s+(\w+)\s*\{(.*?)^\s*\}', text, re.M | re.S):
+        name, body = m.groups()
+        members = []
+        for line in body.split("\n"):
+            line = strip_comment(line).strip().rstrip(",").strip()
+            if line:
+                members.append(line)
+        enums[name] = {mem: i for i, mem in enumerate(members)}
+    return enums
+
+def extract(text, pos):
+    """The literal starting at pos.
+
+    Most defaults are the rest of the line, but object and array literals run
+    over several lines, so those are read to their matching bracket. Taking only
+    the first line of one yields a fragment like "({", which is not a default
+    and must never be reported as one.
+    """
+    while pos < len(text) and text[pos] in " \t\n":
+        pos += 1
+    if pos >= len(text):
+        return ""
+    if text[pos] not in "([{":
+        end = pos
+        while end < len(text) and text[end] not in ",}\n":
+            end += 1
+        return text[pos:end].strip()
+
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    stack, i, in_str, esc = [], pos, False, False
+    while i < len(text):
+        c = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c in pairs:
+            stack.append(pairs[c])
+        elif stack and c == stack[-1]:
+            stack.pop()
+            if not stack:
+                return text[pos:i + 1]
+        i += 1
+    return text[pos:].strip()
+
+def parse_value(typ, raw, enums, spec):
+    raw = strip_comment(raw).strip().rstrip(";").strip()
+    if typ == "bool" and raw in ("true", "false"):
+        return raw == "true"
+    if typ in ("int", "real"):
+        try:
+            return float(raw) if typ == "real" else int(raw)
+        except ValueError:
+            pass
+        m = re.fullmatch(r'(?:\w+\.)?(\w+)\.(\w+)', raw)
+        if m and m.group(1) in enums and m.group(2) in enums[m.group(1)]:
+            return enums[m.group(1)][m.group(2)]
+    if typ in ("string", "color") and len(raw) >= 2 and raw[0] == raw[-1] == '"':
+        return raw[1:-1]
+    # The two properties that genuinely defer to the spec table.
+    m = re.fullmatch(r'\w+\.SPEC\.(\w+)\.def', raw)
+    if m and m.group(1) in spec:
+        return spec[m.group(1)]
+    if typ == "var":
+        if raw == "null":
+            return None
+        return parse_json_ish(raw)
+    return _UNPARSED
+
+def parse_json_ish(raw):
+    """Parse a QML/JS data literal. These hold no expressions, so JSON is enough
+    once a few JS-isms are handled."""
+    raw = raw.strip()
+    if raw in ("undefined", ""):
+        return _UNPARSED
+    # QML wraps object literals in parentheses: ({}) rather than {}.
+    if raw.startswith("(") and raw.endswith(")"):
+        raw = raw[1:-1].strip()
+    try:
+        return json.loads(raw)
+    except ValueError:
+        pass
+    cleaned = "\n".join(strip_comment(l) for l in raw.split("\n"))
+    cleaned = re.sub(r',(\s*[}\]])', r'\1', cleaned)          # trailing commas
+    cleaned = re.sub(r'([{,]\s*)(\w+)(\s*:)', r'\1"\2"\3', cleaned)  # bare keys
+    try:
+        return json.loads(cleaned)
+    except ValueError:
+        return _UNPARSED
+
+def strip_comment(raw):
+    """Drop a trailing // comment, ignoring one inside a string literal."""
+    in_str = False
+    for i, c in enumerate(raw):
+        if c == '"' and (i == 0 or raw[i - 1] != "\\"):
+            in_str = not in_str
+        elif not in_str and c == "/" and raw[i:i + 2] == "//":
+            return raw[:i]
+    return raw
+
+def normalize(value):
+    """Make a declared default and a stored value comparable.
+
+    QML `color` properties are declared as "#ffffff" but persisted as an
+    expanded object, so a naive comparison reports every colour as changed.
+    """
+    if isinstance(value, dict) and {"r", "g", "b"} <= set(value):
+        r, g, b = (int(round(value[c] * 255)) for c in "rgb")
+        return f"#{r:02x}{g:02x}{b:02x}"
+    if isinstance(value, str) and re.fullmatch(r'#[0-9a-fA-F]{6}', value):
+        return value.lower()
+    if isinstance(value, float) and value == int(value):
+        return int(value)
+    return value
+
+main()

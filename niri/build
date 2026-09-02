@@ -8,6 +8,10 @@ set -e
 
 NIRI_VERSION=v26.04
 XWS_VERSION=v0.8.2
+MATUGEN_VERSION=v4.2.0
+DGOP_VERSION=v0.2.3
+DANKSEARCH_VERSION=v0.3.2
+DMS_VERSION=v1.5.3
 
 cd "$(dirname "$0")"
 IMAGE=niri-build
@@ -15,6 +19,10 @@ IMAGE=niri-build
 docker build \
     --build-arg NIRI_VERSION="$NIRI_VERSION" \
     --build-arg XWS_VERSION="$XWS_VERSION" \
+    --build-arg MATUGEN_VERSION="$MATUGEN_VERSION" \
+    --build-arg DGOP_VERSION="$DGOP_VERSION" \
+    --build-arg DANKSEARCH_VERSION="$DANKSEARCH_VERSION" \
+    --build-arg DMS_VERSION="$DMS_VERSION" \
     -t "$IMAGE" .
 
 # docker cp needs a container, but not a running one.
@@ -28,6 +36,8 @@ docker cp "$cid:/out" out
 absent=
 for f in niri niri-session xwayland-satellite niri.desktop niri-portals.conf \
          niri.service niri-shutdown.target default-config.kdl \
+         dms matugen dgop dsearch dms.service danklogo.svg \
+         dms-desktop dms-shell \
          runtime-deps.txt build-info.txt; do
     [ -e "out/$f" ] || absent="$absent $f"
 done
@@ -42,7 +52,7 @@ fi
 # binaries that still do not resolve. If a package IS installed and the library
 # is still missing, the image is ahead of the host: upgrade it, or pin the FROM
 # line in Dockerfile to an older debian:testing digest.
-for bin in out/niri out/xwayland-satellite; do
+for bin in out/niri out/xwayland-satellite out/matugen out/dms out/dgop out/dsearch; do
     unresolved=$(ldd "$bin" | grep 'not found' || true)
     if [ -n "$unresolved" ]; then
         echo >&2
