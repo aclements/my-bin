@@ -1,6 +1,47 @@
 #!/bin/sh
 
+# Debian Policy 11.8.3 requires an x-terminal-emulator to support:
+#   -e COMMAND [ARGS...]  run COMMAND; the args form its argument list
+#   -T TITLE              set the window title
+#
+# Ptyxis implements neither spelling. Its equivalent of -e is -x/--execute,
+# which takes the whole command as a SINGLE string that it parses itself, so the
+# arguments have to be re-quoted into one. Its title option is --title.
+#
+# Ptyxis also does not participate in the freedesktop convention that
+# xdg-terminal-exec uses: its desktop entry sets X-TerminalArgTitle, ArgDir and
+# ArgAppId but no X-TerminalArgExec, and that spec likewise assumes separate
+# arguments after the exec flag. So neither convention reaches Ptyxis without a
+# wrapper like this one.
+
+quote() {
+    for arg in "$@"; do
+        printf " '%s'" "$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")"
+    done
+}
+
 if command -v ptyxis > /dev/null 2>&1; then
+    title=
+    cmd=
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -T|--title)
+                title=$2
+                shift 2
+                ;;
+            -e|--command)
+                shift
+                cmd=$(quote "$@")
+                shift $#
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+    # Anything left in "$@" is passed through untouched.
+    [ -n "$cmd" ] && set -- -x "$cmd" "$@"
+    [ -n "$title" ] && set -- --title "$title" "$@"
     exec ptyxis --new-window "$@"
 fi
 if command -v gnome-terminal > /dev/null 2>&1; then
