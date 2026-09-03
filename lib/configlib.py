@@ -139,6 +139,7 @@ def gset(schemaID, *args, path=None, extension=None):
         else:
             gv = python_to_gvariant(v)
         have = s.get_value(k)
+        gv = retype(gv, v, have.get_type_string())
         if have != gv or mode == "list":
             print(f"{schemaID}{':'+path if path else ''} {k}")
             print(f"  Default: {s.get_default_value(k)}")
@@ -150,6 +151,31 @@ def gset(schemaID, *args, path=None, extension=None):
                 s.reset(k)
             else:
                 s.set_value(k, gv)
+
+# GSettings distinguishes integer widths that Python does not. python_to_gvariant
+# can only guess from the Python type, and guesses int32; a key declared uint32,
+# such as Ptyxis's default-columns, rejects that. gset consults the schema and
+# rebuilds the value at the declared width.
+_NUMERIC_VARIANTS = {
+    "y": GLib.Variant.new_byte,
+    "n": GLib.Variant.new_int16,
+    "q": GLib.Variant.new_uint16,
+    "i": GLib.Variant.new_int32,
+    "u": GLib.Variant.new_uint32,
+    "x": GLib.Variant.new_int64,
+    "t": GLib.Variant.new_uint64,
+    "d": GLib.Variant.new_double,
+}
+
+def retype(gv, value, want):
+    """Rebuild gv as the type string want, when that is a numeric width we can
+    convert to. Returns gv unchanged if not."""
+    if gv.get_type_string() == want or want not in _NUMERIC_VARIANTS:
+        return gv
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return gv
+    return _NUMERIC_VARIANTS[want](
+        float(value) if want == "d" else int(value))
 
 def python_to_gvariant(value):
     """Converts a Python value to a GVariant."""
