@@ -237,3 +237,16 @@ def set_common():
         return
     gset(f"org.gnome.Ptyxis.Profile", "opacity", 0.95,
          path=f"/org/gnome/Ptyxis/Profiles/{ptyxisUUID}/")
+
+    # Open at 80 columns. restore-window-size has to go off as well: with it on,
+    # Ptyxis asks for whatever size it last had rather than default-columns, so
+    # the default is never used after the first resize.
+    #
+    # Under a tiling WM the rows are overridden immediately -- the window fills
+    # its column -- but the window is briefly mapped at whatever it asked for,
+    # so a value near the real height keeps that flash small. 50 is between the
+    # laptop's ~57 rows and the ultrawide's ~83, rather than tuned to either.
+    gset("org.gnome.Ptyxis",
+         "default-columns", 80,
+         "default-rows", 50,
+         "restore-window-size", False)
